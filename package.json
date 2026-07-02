@@ -1,0 +1,62 @@
+{
+  "name": "@georgedong32/pi-review",
+  "version": "0.1.0",
+  "packageManager": "bun@1.3.13",
+  "description": "Pi extension for fan-out code review: N parallel reviewer subagents + a cheap-model gate",
+  "type": "module",
+  "license": "Apache-2.0",
+  "author": "GeorgeDong32",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GeorgeDong32/pi-review.git"
+  },
+  "homepage": "https://github.com/GeorgeDong32/pi-review#readme",
+  "bugs": {
+    "url": "https://github.com/GeorgeDong32/pi-review/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "pi-coding-agent",
+    "code-review",
+    "reviewer",
+    "llm",
+    "developer-tools",
+    "command-line",
+    "productivity"
+  ],
+  "peerDependencies": {
+    "@mariozechner/pi-ai": ">=0.69.0 <1.0.0",
+    "@mariozechner/pi-coding-agent": ">=0.69.0 <1.0.0"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "files": [
+    "CHANGELOG.md",
+    "agents",
+    "prompts",
+    "src",
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@mariozechner/pi-ai": "^0.72.1",
+    "@mariozechner/pi-coding-agent": "^0.72.1",
+    "@sinclair/typebox": "^0.34.0",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}
