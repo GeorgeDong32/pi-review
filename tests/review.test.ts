@@ -59,8 +59,8 @@ function fakeHandle(): FakeHandle {
 }
 
 const REVIEWER_OK: ReviewerSpec = {
-	id: "bug-detector",
-	label: "Bug Detector",
+	id: "bugbot",
+	label: "Bugbot",
 	enabled: true,
 	model: "anthropic/claude-sonnet-4-6",
 	thinking: "medium",

@@ -11,6 +11,8 @@
  *   - PI_REVIEW_* markers so the child can identify which role it is playing
  */
 
+import { structuredOutputCaptureExtensionPath, withStructuredOutputTool } from "./paths.js";
+
 export interface ReviewerArgsInput {
 	model: string;
 	thinking?: string;
@@ -43,10 +45,17 @@ export function applyThinkingSuffix(model: string, thinking: string | undefined)
 
 /** Build the CLI arg list and env map for spawning a reviewer. */
 export function buildReviewerArgs(input: ReviewerArgsInput): BuiltArgs {
-	const args: string[] = ["--no-session", "--no-extensions", "--no-skills"];
+	const args: string[] = [
+		"--no-session",
+		"--no-extensions",
+		"--no-skills",
+		"-e",
+		structuredOutputCaptureExtensionPath(),
+	];
 	args.push("--model", applyThinkingSuffix(input.model, input.thinking));
-	if (input.tools && input.tools.length > 0) {
-		args.push("--tools", input.tools.join(","));
+	const tools = withStructuredOutputTool(input.tools);
+	if (tools.length > 0) {
+		args.push("--tools", tools.join(","));
 	}
 	if (input.inheritProjectContext === false) {
 		args.push("--no-project-context");
@@ -77,9 +86,15 @@ export interface GateArgsInput {
 
 /** Build the CLI arg list and env map for spawning the gate. */
 export function buildGateArgs(input: GateArgsInput): BuiltArgs {
-	const args: string[] = ["--no-session", "--no-extensions", "--no-skills"];
+	const args: string[] = [
+		"--no-session",
+		"--no-extensions",
+		"--no-skills",
+		"-e",
+		structuredOutputCaptureExtensionPath(),
+	];
 	args.push("--model", applyThinkingSuffix(input.model, input.thinking));
-	// Gate is pure reasoning — no tools.
+	args.push("--tools", "structured_output");
 	args.push("--system-prompt", input.promptFile);
 	args.push(input.taskText);
 	const env: Record<string, string> = {

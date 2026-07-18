@@ -28,7 +28,7 @@ describe("buildReviewerArgs", () => {
 		promptFile: "/tmp/reviewer-prompt.md",
 		schemaPath: "/tmp/schema.json",
 		outputPath: "/tmp/output.json",
-		reviewerId: "bug-detector",
+		reviewerId: "bugbot",
 		taskText: "Review the diff",
 	};
 
@@ -46,18 +46,29 @@ describe("buildReviewerArgs", () => {
 		assert.equal(args[i + 1], "anthropic/claude-sonnet-4-6:medium");
 	});
 
-	test("emits --tools csv when tools provided", () => {
+	test("emits -e structured-output capture extension", () => {
+		const { args } = buildReviewerArgs(base);
+		const i = args.indexOf("-e");
+		assert.ok(i >= 0);
+		assert.ok(args[i + 1]?.includes("structured-output-capture"));
+	});
+
+	test("emits --tools csv with structured_output appended", () => {
 		const { args } = buildReviewerArgs(base);
 		const i = args.indexOf("--tools");
 		assert.ok(i >= 0);
-		assert.equal(args[i + 1], "read,grep,find");
+		assert.equal(args[i + 1], "read,grep,find,structured_output");
 	});
 
-	test("omits --tools when tools is empty/undefined", () => {
+	test("emits --tools structured_output when tools empty", () => {
 		const { args } = buildReviewerArgs({ ...base, tools: [] });
-		assert.equal(args.includes("--tools"), false);
+		const i = args.indexOf("--tools");
+		assert.ok(i >= 0);
+		assert.equal(args[i + 1], "structured_output");
 		const { args: args2 } = buildReviewerArgs({ ...base, tools: undefined });
-		assert.equal(args2.includes("--tools"), false);
+		const j = args2.indexOf("--tools");
+		assert.ok(j >= 0);
+		assert.equal(args2[j + 1], "structured_output");
 	});
 
 	test("emits --no-project-context when inheritProjectContext is false", () => {
@@ -86,7 +97,7 @@ describe("buildReviewerArgs", () => {
 		const { env } = buildReviewerArgs(base);
 		assert.equal(env.PI_SUBAGENT_STRUCTURED_OUTPUT_SCHEMA, "/tmp/schema.json");
 		assert.equal(env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE, "/tmp/output.json");
-		assert.equal(env.PI_REVIEW_REVIEWER_ID, "bug-detector");
+		assert.equal(env.PI_REVIEW_REVIEWER_ID, "bugbot");
 	});
 });
 
@@ -100,9 +111,11 @@ describe("buildGateArgs", () => {
 		taskText: "Aggregate reviewer outputs",
 	};
 
-	test("omits --tools (gate is pure reasoning)", () => {
+	test("emits --tools structured_output for gate", () => {
 		const { args } = buildGateArgs(base);
-		assert.equal(args.includes("--tools"), false);
+		const i = args.indexOf("--tools");
+		assert.ok(i >= 0);
+		assert.equal(args[i + 1], "structured_output");
 	});
 
 	test("emits --model with thinking suffix", () => {

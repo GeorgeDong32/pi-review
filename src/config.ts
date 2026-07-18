@@ -22,7 +22,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 		model: "inherit",
 		thinking: "low",
 		enabled: true,
-		threshold: 3,
+		threshold: 8,
 	},
 	concurrency: 4,
 	reviewers: {
@@ -34,21 +34,13 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			thinking: "high",
 			tools: ["read", "grep", "find", "ls"],
 		},
-		"bug-detector": {
-			id: "bug-detector",
-			label: "Bug Detector",
+		"bugbot": {
+			id: "bugbot",
+			label: "Bugbot",
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
 			tools: ["read", "grep", "find"],
-		},
-		"conventions": {
-			id: "conventions",
-			label: "Conventions",
-			enabled: true,
-			model: "inherit",
-			thinking: "medium",
-			tools: ["read", "grep", "find", "ls"],
 		},
 		"history-context": {
 			id: "history-context",
@@ -57,6 +49,30 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			model: "inherit",
 			thinking: "minimal",
 			tools: ["read", "bash"],
+		},
+		"security-review": {
+			id: "security-review",
+			label: "Security Review",
+			enabled: true,
+			model: "inherit",
+			thinking: "medium",
+			tools: ["read", "grep", "find"],
+		},
+		"code-comments": {
+			id: "code-comments",
+			label: "Code Comments",
+			enabled: true,
+			model: "inherit",
+			thinking: "medium",
+			tools: ["read", "grep", "find", "ls"],
+		},
+		"conventions": {
+			id: "conventions",
+			label: "Conventions",
+			enabled: false,
+			model: "inherit",
+			thinking: "medium",
+			tools: ["read", "grep", "find", "ls"],
 		},
 	},
 	inheritance: {
@@ -169,12 +185,12 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 	return base;
 }
 
-/** Threshold is 0-10 inclusive; values outside are clamped. NaN falls back to 3 (default). */
+/** Threshold is 0-10 inclusive; values outside are clamped. NaN falls back to 8 (default). */
 export function clampThreshold(n: number): number {
-	if (Number.isNaN(n)) return 3;
+	if (Number.isNaN(n)) return 8;
 	if (n === Infinity) return 10;
 	if (n === -Infinity) return 0;
-	if (!Number.isFinite(n)) return 3;
+	if (!Number.isFinite(n)) return 8;
 	return Math.max(0, Math.min(10, Math.floor(n)));
 }
 

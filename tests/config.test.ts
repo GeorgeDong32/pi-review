@@ -41,9 +41,9 @@ describe("mergeWithDefaults", () => {
 		const merged = mergeWithDefaults({});
 		assert.equal(merged.schemaVersion, 1);
 		assert.equal(merged.gate.model, "inherit");
-		assert.equal(merged.gate.threshold, 3);
+		assert.equal(merged.gate.threshold, 8);
 		assert.equal(merged.concurrency, 4);
-		assert.equal(Object.keys(merged.reviewers).length, 4);
+		assert.equal(Object.keys(merged.reviewers).length, 6);
 	});
 
 	test("returns DEFAULT_CONFIG when raw is null/non-object", () => {
@@ -78,10 +78,10 @@ describe("mergeWithDefaults", () => {
 	test("merges per-reviewer overrides", () => {
 		const merged = mergeWithDefaults({
 			reviewers: {
-				"bug-detector": { model: "anthropic/claude-opus-4-6", thinking: "xhigh", enabled: false },
+				bugbot: { model: "anthropic/claude-opus-4-6", thinking: "xhigh", enabled: false },
 			},
 		});
-		const bug = merged.reviewers["bug-detector"];
+		const bug = merged.reviewers.bugbot;
 		assert.equal(bug.model, "anthropic/claude-opus-4-6");
 		assert.equal(bug.thinking, "xhigh");
 		assert.equal(bug.enabled, false);
@@ -98,16 +98,16 @@ describe("mergeWithDefaults", () => {
 		assert.ok(merged.reviewers["custom-foo"]);
 		assert.equal(merged.reviewers["custom-foo"].label, "Custom Foo");
 		// Built-in reviewers still present.
-		assert.equal(Object.keys(merged.reviewers).length, 5);
+		assert.equal(Object.keys(merged.reviewers).length, 7);
 	});
 
 	test("ignores invalid sub-objects under reviewers", () => {
 		const merged = mergeWithDefaults({
-			reviewers: { "claude-md-compliance": null, "bug-detector": "bad" },
+			reviewers: { "claude-md-compliance": null, bugbot: "bad" },
 		});
 		// Built-in values kept when override is bad.
 		assert.equal(merged.reviewers["claude-md-compliance"].model, "inherit");
-		assert.equal(merged.reviewers["bug-detector"].model, "inherit");
+		assert.equal(merged.reviewers.bugbot.model, "inherit");
 	});
 
 	test("merges inheritance block", () => {
@@ -127,7 +127,7 @@ describe("clampThreshold", () => {
 		assert.equal(clampThreshold(10), 10);
 		assert.equal(clampThreshold(11), 10);
 		assert.equal(clampThreshold(3.7), 3);
-		assert.equal(clampThreshold(NaN), 3);
+		assert.equal(clampThreshold(NaN), 8);
 		assert.equal(clampThreshold(-Infinity), 0);
 		assert.equal(clampThreshold(Infinity), 10);
 	});

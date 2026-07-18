@@ -1,21 +1,12 @@
 /**
- * Gate subagent execution: single spawn that aggregates reviewer outputs.
- *
- * Pattern ported from pi-subagents/src/runs/shared/acceptance.ts:681-797.
- *
- * The gate receives a markdown prompt containing:
- *   - input summary
- *   - threshold
- *   - one `## Reviewer: <id>` block per successful reviewer (containing
- *     the validated JSON output)
- *
- * It must call `structured_output` once with the gate verdict schema.
+ * Gate subagent — Phase 3 score + filter (compressed Claude steps 5–6).
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildGateArgs, type BuiltArgs } from "./args.js";
+import { readGatePromptBody } from "./paths.js";
 import { GateOutputSchema } from "./schema.js";
 import { createRuntimeDir, runSubagent } from "./spawn.js";
 import type {
@@ -26,25 +17,36 @@ import type {
 	ReviewerRunResult,
 } from "./types.js";
 
-/** Options for runGate. */
+const MAX_TASK_ARG_CHARS = 24_000;
+
 export interface RunGateInput {
-	/** Successful reviewer results to feed into the gate. */
 	reviewers: ReviewerRunResult[];
-	/** The original input the reviewers saw (for context). */
 	promptBody: string;
-	/** Resolved model id for the gate (no "inherit" sentinel). */
 	gateModel: string;
-	/** Thinking level for the gate. */
 	gateThinking?: string;
-	/** Confidence floor — issues below this are dropped by the gate. */
 	threshold: number;
-	/** Working directory. */
 	cwd: string;
-	/** Full config (used for tool defaults; gate currently uses no tools). */
 	config: PiReviewConfig;
 }
 
-/** Render the gate prompt: markdown with reviewer blocks. */
+function materializeGateSystemPrompt(): string {
+	const dir = join(tmpdir(), `pi-review-gate-sys-${process.pid}-${Date.now()}`);
+	mkdirSync(dir, { recursive: true });
+	const path = join(dir, "gate-system.md");
+	writeFileSync(path, readGatePromptBody(), "utf-8");
+	return path;
+}
+
+function materializeTaskArg(text: string): string {
+	if (text.length <= MAX_TASK_ARG_CHARS) return text;
+	const dir = join(tmpdir(), `pi-review-gate-task-${process.pid}-${Date.now()}`);
+	mkdirSync(dir, { recursive: true });
+	const path = join(dir, "task.md");
+	writeFileSync(path, text, "utf-8");
+	return `@${path}`;
+}
+
+/** Render the gate task prompt: reviewer JSON blocks + threshold. */
 export function renderGatePrompt(input: RunGateInput): string {
 	const blocks: string[] = [];
 	blocks.push("# pi-review — gate input");
@@ -52,7 +54,7 @@ export function renderGatePrompt(input: RunGateInput): string {
 	blocks.push("## Input summary");
 	blocks.push(input.promptBody.slice(0, 2000));
 	blocks.push("");
-	blocks.push(`## Threshold: ${input.threshold}`);
+	blocks.push(`## Threshold: ${input.threshold} (on 1–10 scale; keep issues with confidence >= threshold)`);
 	blocks.push("");
 	blocks.push("## Reviewer outputs");
 	blocks.push("");
@@ -77,27 +79,25 @@ export function renderGatePrompt(input: RunGateInput): string {
 	blocks.push("## Instructions");
 	blocks.push("");
 	blocks.push(
-		"Dedupe by (file, line, category), keep highest confidence. Drop issues with confidence < threshold. Apply verdict rules. Call structured_output once with the gate JSON schema.",
+		"Dedupe by (file, line, category). Re-score each issue 1–10 using the rubric in your system prompt. Drop issues below threshold. Apply verdict rules. Call structured_output once.",
 	);
 
 	return blocks.join("\n");
 }
 
-/** Materialize the gate prompt into a temp file and spawn. */
 export async function runGate(input: RunGateInput): Promise<GateRunResult> {
 	const runtime = createRuntimeDir("pi-review-gate-");
-	const promptFile = join(runtime.dir, "gate-prompt.md");
-	mkdirSync(runtime.dir, { recursive: true });
+	const systemPromptFile = materializeGateSystemPrompt();
 	const promptBody = renderGatePrompt(input);
-	writeFileSync(promptFile, promptBody, "utf-8");
+	const taskText = materializeTaskArg(promptBody);
 
 	const args: BuiltArgs = buildGateArgs({
 		model: input.gateModel,
 		thinking: input.gateThinking,
-		promptFile,
+		promptFile: systemPromptFile,
 		schemaPath: runtime.schemaPath,
 		outputPath: runtime.outputPath,
-		taskText: promptBody,
+		taskText,
 	});
 
 	const result = await runSubagent({

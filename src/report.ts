@@ -27,6 +27,7 @@ export function buildReport(input: {
 	reviewers: ReviewerRunResult[];
 	gate: GateRunResult | null;
 	input: ReviewReport["input"];
+	prep?: ReviewReport["prep"];
 }): ReviewReport {
 	const reviewers = input.reviewers;
 	const gate = input.gate;
@@ -44,6 +45,7 @@ export function buildReport(input: {
 		startedAt: input.startedAt,
 		durationMs,
 		input: input.input,
+		prep: input.prep,
 		reviewers,
 		gate,
 		totals,
@@ -70,6 +72,10 @@ export function renderReport(report: ReviewReport): string {
 	lines.push("");
 	lines.push(renderVerdictLine(report));
 	lines.push(renderSummaryLine(report));
+	if (report.prep) {
+		lines.push("");
+		lines.push(`_Rules: ${report.prep.rulePaths.join(", ") || "none"} · ${report.prep.summary}_`);
+	}
 	lines.push("");
 
 	for (const r of report.reviewers) {
@@ -130,12 +136,16 @@ function renderGateSection(g: GateRunResult): string {
 		return [`### gate (${g.model}) — ok · no verdict`, ""].join("\n");
 	}
 	const issues = v.issues;
+	const noHighConfidence =
+		v.verdict === "approve" && issues.length === 0 && v.reason.toLowerCase().includes("no high-confidence");
 	return [
 		`### gate (${g.model}) — ok · ${(g.durationMs / 1000).toFixed(1)}s`,
 		"",
 		`- verdict: ${v.verdict}`,
 		`- reason: ${v.reason}`,
-		`- ${issues.length} issue${issues.length === 1 ? "" : "s"} after dedupe + threshold`,
+		noHighConfidence
+			? "- no high-confidence issues after dedupe + threshold"
+			: `- ${issues.length} issue${issues.length === 1 ? "" : "s"} after dedupe + threshold`,
 		"",
 	].join("\n");
 }

@@ -2,7 +2,7 @@
 
 Pi extension for fan-out code review: **N parallel reviewer subagents + a cheap-model gate** that aggregates their structured output into a final verdict.
 
-Pattern ported from the Claude code-review plugin: instead of one LLM looking at the diff, multiple specialised reviewers run in parallel, then a single low-cost "gate" dedupes their findings and decides whether the change is `approve`, `comment`, or `request_changes`.
+Pattern ported from the Claude code-review plugin: eligibility → prep → parallel content reviewers → gate (confidence filter + verdict) → report. See [reference/](./reference/) for upstream flow notes and the version roadmap.
 
 ## Commands
 
@@ -26,22 +26,31 @@ Flags:
 
 | Flag | Effect |
 |---|---|
-| `--threshold N` | Override the confidence floor (0-10). Issues with `confidence < N` are dropped by the gate. Default 3. |
+| `--threshold N` | Override the confidence floor (0-10). Issues with `confidence < N` are dropped by the gate. Default **8**. |
 | `--reviewer id` | Restrict the run to a specific reviewer. Repeatable. |
 | `--no-gate` | Skip the gate step. Useful for fast iteration when you only want raw reviewer output. |
 | `--gate-model id` | Override the gate's model for this run. |
 | `--no-spawn` | Dry run — print the resolved reviewer list, gate model, threshold, and exit. |
 
-## Bundled reviewers
+## Bundled reviewers (v0.2 default)
 
-| ID | Purpose | Default thinking | Default tools |
+| ID | Purpose | Default | Tools |
 |---|---|---|---|
-| `claude-md-compliance` | Audit diff against project rules in AGENTS.md / CLAUDE.md / .pi/ | high | read, grep, find, ls |
-| `bug-detector` | Find obvious bugs — null deref, off-by-one, missing awaits, swallowed errors, race conditions | medium | read, grep, find |
-| `conventions` | Style pass — naming, error handling, `any` usage, import order | medium | read, grep, find, ls |
-| `history-context` | Use `git blame` / `git log` on touched files to surface hot areas and re-fix patterns | minimal | read, bash |
+| `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, find, ls |
+| `bugbot` | Obvious bugs in the diff only (Cursor-style discipline) | enabled | read, grep, find |
+| `history-context` | Git blame / log context on touched files | enabled | read, bash |
+| `security-review` | Security issues introduced by the diff | enabled | read, grep, find |
+| `code-comments` | Inline comment / TODO guidance in changed files | enabled | read, grep, find, ls |
+| `conventions` | De-facto style pass | **disabled** | read, grep, find, ls |
 
-The gate is run with no tools (pure reasoning) and uses the user-configured model.
+## Pipeline
+
+```text
+eligibility → prep (rule paths + diff summary) → 5 reviewers (parallel, cap 4)
+  → gate (re-score + dedupe + threshold) → markdown report
+```
+
+The gate uses `structured_output` via a child capture extension (`src/structured-output-capture.ts`).
 
 ## Configuration
 

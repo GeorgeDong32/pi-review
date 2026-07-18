@@ -131,11 +131,18 @@ export interface ResolvedInput {
 	label: string;
 }
 
+/** Prep metadata attached to a run (Claude steps 2–3). */
+export interface PrepMetadata {
+	rulePaths: string[];
+	summary: string;
+}
+
 /** Top-level run report. */
 export interface ReviewReport {
 	startedAt: number;
 	durationMs: number;
 	input: ResolvedInput;
+	prep?: PrepMetadata;
 	reviewers: ReviewerRunResult[];
 	gate: GateRunResult | null;
 	totals: {

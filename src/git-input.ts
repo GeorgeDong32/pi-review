@@ -12,6 +12,7 @@
  * The function accepts a `runGit` dependency so tests can mock git output
  * without forking a real repo.
  */
+import { isAbsolute, join } from "node:path";
 import type { ResolvedInput } from "./types.js";
 
 /** Minimal git invocation. Tests inject a fake. */
@@ -143,6 +144,24 @@ export async function resolveDefaultDiff(cwd: string): Promise<ResolvedInput | n
 		content: diff.stdout,
 		source: { kind: "vs-default-branch", base },
 		label: `vs ${base}`,
+	};
+}
+
+/** True when `cwd` is inside a git work tree. */
+export async function isGitRepo(cwd: string): Promise<boolean> {
+	const r = await _runGit(["rev-parse", "--git-dir"], { cwd });
+	return r.exitCode === 0;
+}
+
+/** Load diff content from a user path or `@file` reference. */
+export async function resolveInputFromPath(cwd: string, pathArg: string): Promise<ResolvedInput> {
+	const raw = pathArg.startsWith("@") ? pathArg.slice(1) : pathArg;
+	const abs = isAbsolute(raw) ? raw : join(cwd, raw);
+	const content = await _readFile(abs);
+	return {
+		content,
+		source: { kind: "path", path: abs },
+		label: raw.split("/").pop() ?? raw,
 	};
 }
 
