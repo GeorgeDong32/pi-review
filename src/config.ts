@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
-import type { PiReviewConfig, ReviewerSpec } from "./types.js";
+import type { PiReviewConfig, ReviewerSpec, ScorePerIssueMode } from "./types.js";
 
 /** Default reviewer and gate config shipped with the package. */
 export const DEFAULT_CONFIG: PiReviewConfig = {
@@ -23,6 +23,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 		thinking: "low",
 		enabled: true,
 		threshold: 8,
+		scorePerIssue: "blocker-major",
 	},
 	concurrency: 4,
 	reviewers: {
@@ -135,6 +136,10 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 		if (typeof g.threshold === "number" && Number.isFinite(g.threshold)) {
 			base.gate.threshold = clampThreshold(g.threshold);
 		}
+		if (typeof g.scorePerIssue === "string") {
+			const mode = parseScorePerIssueMode(g.scorePerIssue);
+			if (mode) base.gate.scorePerIssue = mode;
+		}
 	}
 
 	// Top-level concurrency (clamped to [1, MAX_PARALLEL_CONCURRENCY]).
@@ -194,6 +199,16 @@ export function clampThreshold(n: number): number {
 	return Math.max(0, Math.min(10, Math.floor(n)));
 }
 
+export function parseScorePerIssueMode(raw: string): ScorePerIssueMode | null {
+	const v = raw.trim().toLowerCase();
+	if (v === "off" || v === "false" || v === "0" || v === "no") return "off";
+	if (v === "blocker-major" || v === "blocker_major" || v === "major") {
+		return "blocker-major";
+	}
+	if (v === "all" || v === "true" || v === "1" || v === "yes") return "all";
+	return null;
+}
+
 /**
  * Validate a merged config. Returns ok=false with a list of human-readable
  * errors when something is wrong. Used by /review-config to surface bad edits.
@@ -211,6 +226,13 @@ export function validateConfig(cfg: PiReviewConfig): { ok: true } | { ok: false;
 	}
 	if (cfg.gate.threshold < 0 || cfg.gate.threshold > 10) {
 		errors.push("gate.threshold must be between 0 and 10");
+	}
+	if (
+		cfg.gate.scorePerIssue !== "off" &&
+		cfg.gate.scorePerIssue !== "blocker-major" &&
+		cfg.gate.scorePerIssue !== "all"
+	) {
+		errors.push("gate.scorePerIssue must be off | blocker-major | all");
 	}
 	if (cfg.concurrency < 1 || cfg.concurrency > MAX_PARALLEL_CONCURRENCY) {
 		errors.push(`concurrency must be between 1 and ${MAX_PARALLEL_CONCURRENCY}`);

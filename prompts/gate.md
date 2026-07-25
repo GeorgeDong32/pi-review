@@ -48,6 +48,8 @@ Drop issues with re-scored `confidence < threshold`.
 
 If **no issues** pass threshold → `verdict: approve`, empty `issues`, reason notes no high-confidence findings.
 
+**Note:** The parent process re-applies dedupe, threshold, and verdict rules in code after your output (and may run independent per-issue scorers for blocker/major). Still follow these rules so your `issues` list is high-signal.
+
 ## Output
 
 Call `structured_output` exactly once with **exactly** these top-level keys: `verdict`, `issues` (array), `reason`.

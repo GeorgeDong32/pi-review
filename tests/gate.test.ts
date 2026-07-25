@@ -57,6 +57,21 @@ afterEach(() => {
 });
 
 describe("renderGatePrompt", () => {
+	test("includes full change under review (not truncated)", () => {
+		const longBody = "x".repeat(3000);
+		const prompt = renderGatePrompt({
+			reviewers: [],
+			promptBody: longBody,
+			gateModel: "anthropic/claude-haiku-4-5",
+			threshold: 5,
+			cwd: "/tmp",
+			config: DEFAULT_CONFIG,
+		});
+		assert.ok(prompt.includes("<diff>"));
+		assert.ok(prompt.includes(longBody));
+		assert.ok(!prompt.includes(longBody.slice(0, 2000) + "\n</diff>") || prompt.includes(longBody));
+	});
+
 	test("includes threshold line", () => {
 		const prompt = renderGatePrompt({
 			reviewers: [],
@@ -141,10 +156,54 @@ describe("runGate", () => {
 			threshold: 3,
 			cwd: scratchDir,
 			config: DEFAULT_CONFIG,
+			scorePerIssue: "off",
 		});
 		assert.equal(result.ok, true);
-		assert.equal(result.verdict?.verdict, "comment");
+		// Empty issues → code-side enforce forces approve (LLM "comment" is overridden).
+		assert.equal(result.verdict?.verdict, "approve");
 		assert.equal(result.model, "anthropic/claude-haiku-4-5");
+	});
+
+	test("enforces request_changes when LLM wrongly approves a high-confidence blocker", async () => {
+		scratchDir = mkdtempSync(join(tmpdir(), "pi-review-gate-"));
+		setSpawnImpl((_cmd, _args, opts) => {
+			const h = fakeHandle();
+			const out = opts.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;
+			if (typeof out === "string") {
+				writeFileSync(
+					out,
+					JSON.stringify({
+						verdict: "approve",
+						issues: [
+							{
+								file: "a.ts",
+								line: 1,
+								category: "bug",
+								severity: "blocker",
+								confidence: 9,
+								evidence: "null deref",
+							},
+						],
+						reason: "looks fine",
+					}),
+					"utf-8",
+				);
+			}
+			setImmediate(() => h._fire("exit", 0, null));
+			return h;
+		});
+		const result = await runGate({
+			reviewers: [],
+			promptBody: "diff",
+			gateModel: "haiku",
+			threshold: 8,
+			cwd: scratchDir,
+			config: DEFAULT_CONFIG,
+			scorePerIssue: "off",
+		});
+		assert.equal(result.ok, true);
+		assert.equal(result.verdict?.verdict, "request_changes");
+		assert.equal(result.verdict?.issues.length, 1);
 	});
 
 	test("returns ok=false when output is missing", async () => {

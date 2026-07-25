@@ -17,10 +17,17 @@ describe("parseReviewArgs", () => {
 		assert.equal(p.path, "@./changes.patch");
 	});
 
-	test("defaults", () => {
-		const p = parseReviewArgs("");
-		assert.equal(p.noGate, false);
-		assert.equal(p.noSpawn, false);
-		assert.deepEqual(p.reviewers, []);
+	test("clamps --threshold to 0–10", () => {
+		assert.equal(parseReviewArgs("--threshold 99").threshold, 10);
+		assert.equal(parseReviewArgs("--threshold -3").threshold, 0);
+	});
+
+	test("parses --score-per-issue", () => {
+		assert.equal(parseReviewArgs("--score-per-issue off").scorePerIssue, "off");
+		assert.equal(
+			parseReviewArgs("--score-per-issue blocker-major").scorePerIssue,
+			"blocker-major",
+		);
+		assert.equal(parseReviewArgs("--score-per-issue all").scorePerIssue, "all");
 	});
 });

@@ -2,7 +2,7 @@
  * Package path helpers — resolve bundled agents, gate prompt, and the
  * structured-output capture extension used by child `pi` processes.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,9 +28,13 @@ export function resolveGatePromptPath(): string {
 	return join(packageRoot(), "prompts", "gate.md");
 }
 
+/** Per-issue scorer system prompt: `prompts/issue-score.md`. */
+export function resolveIssueScorePromptPath(): string {
+	return join(packageRoot(), "prompts", "issue-score.md");
+}
+
 /** Read agent markdown body (YAML frontmatter stripped). */
 export function readAgentPromptBody(id: string): string {
-	const { readFileSync } = require("node:fs") as typeof import("node:fs");
 	const path = resolveAgentPromptPath(id);
 	if (!existsSync(path)) {
 		throw new Error(`missing agent prompt: ${path}`);
@@ -40,8 +44,13 @@ export function readAgentPromptBody(id: string): string {
 
 /** Read gate markdown body (YAML frontmatter stripped). */
 export function readGatePromptBody(): string {
-	const { readFileSync } = require("node:fs") as typeof import("node:fs");
 	const path = resolveGatePromptPath();
+	return stripFrontmatter(readFileSync(path, "utf-8"));
+}
+
+/** Read issue-score markdown body (YAML frontmatter stripped). */
+export function readIssueScorePromptBody(): string {
+	const path = resolveIssueScorePromptPath();
 	return stripFrontmatter(readFileSync(path, "utf-8"));
 }
 

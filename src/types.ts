@@ -9,6 +9,14 @@
 /** Final verdict produced by the gate subagent. */
 export type Verdict = "approve" | "request_changes" | "comment";
 
+/**
+ * Optional Claude Phase 4 style per-issue scoring after the aggregating gate.
+ * - off: gate LLM + code enforce only
+ * - blocker-major: parallel scorers for blocker/major only (default)
+ * - all: score every surviving candidate issue
+ */
+export type ScorePerIssueMode = "off" | "blocker-major" | "all";
+
 /** Issue severity bucket. */
 export type IssueSeverity = "blocker" | "major" | "minor" | "nit";
 
@@ -105,6 +113,11 @@ export interface PiReviewConfig {
 		enabled: boolean;
 		/** Default confidence floor for the gate (issues with confidence < threshold are dropped). */
 		threshold: number;
+		/**
+		 * Parallel per-issue confidence scorers after the gate LLM pass.
+		 * Default `blocker-major` — light Claude Phase 4 alignment.
+		 */
+		scorePerIssue: ScorePerIssueMode;
 	};
 	/** Max reviewers running in parallel. Hard cap 4. */
 	concurrency: number;

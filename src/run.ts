@@ -4,7 +4,7 @@
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
 import type { ParsedReviewArgs } from "./cli-args.js";
-import { loadConfig, resolveModel } from "./config.js";
+import { loadConfig, resolveModel, clampThreshold } from "./config.js";
 import { checkEligibility, recheckBeforeOutput } from "./eligibility.js";
 import { isGitRepo, resolveDefaultDiff, resolveInputFromPath } from "./git-input.js";
 import { runGate } from "./gate.js";
@@ -14,12 +14,14 @@ import { runReviewers } from "./review.js";
 import type { PiReviewConfig, PrepMetadata, ResolvedInput, ReviewerSpec } from "./types.js";
 
 /** Minimal command context required by the review pipeline (test-friendly). */
-export type ReviewPipelineContext = Pick<
-	ExtensionCommandContext,
-	"cwd" | "hasUI" | "model"
-> & {
-	ui: Pick<ExtensionCommandContext["ui"], "notify">;
-};
+export interface ReviewPipelineContext {
+	cwd: string;
+	hasUI: boolean;
+	model?: { provider: string; id: string } | null;
+	ui: {
+		notify: ExtensionCommandContext["ui"]["notify"];
+	};
+}
 
 export interface RunPipelineOptions {
 	args: ParsedReviewArgs;
@@ -84,16 +86,18 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	const prepMeta: PrepMetadata = { rulePaths: prep.rulePaths, summary: prep.summary };
 	const taskBody = formatReviewTask(prep, input.content);
 
-	const threshold = args.threshold ?? config.gate.threshold;
+	const threshold = clampThreshold(args.threshold ?? config.gate.threshold);
 	const reviewers = resolveReviewers(config, args.reviewers, parentModel);
 	const gateModel = resolveModel(args.gateModel ?? config.gate.model, parentModel);
 	const runGateStep = !args.noGate && config.gate.enabled;
+	const scorePerIssue = args.scorePerIssue ?? config.gate.scorePerIssue;
 
 	if (args.noSpawn) {
 		const lines = [
 			"pi-review dry run",
 			`input: ${input.label}`,
 			`threshold: ${threshold}`,
+			`scorePerIssue: ${scorePerIssue}`,
 			`reviewers (${reviewers.length}): ${reviewers.map((r) => `${r.id} (${r.model})`).join(", ")}`,
 			`gate: ${runGateStep ? `yes (${gateModel})` : "no"}`,
 			`prep rules: ${prep.rulePaths.join(", ") || "(none)"}`,
@@ -128,6 +132,7 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 			threshold,
 			cwd,
 			config,
+			scorePerIssue,
 		});
 	}
 

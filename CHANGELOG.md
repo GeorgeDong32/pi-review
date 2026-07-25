@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Code-side gate enforce** (`src/gate-enforce.ts`): deterministic dedupe + threshold filter + verdict rules after the gate LLM (Claude Phase 5 equivalent).
+- **Full diff to gate**: gate task includes the complete review body inside `<diff>` (no 2KB slice).
+- **Optional per-issue scorers** (`gate.scorePerIssue`, default `blocker-major`): Claude Phase 4–style parallel confidence scoring for high-severity findings (`prompts/issue-score.md`).
+- CLI: `--score-per-issue off|blocker-major|all`; `--threshold` is clamped to 0–10.
+
+### Fixed
+- Spawn: drain stdout to avoid pipe deadlock; reject non-zero child exit even when `output.json` exists.
+- Report: list final gate issues in markdown; mark unfiltered totals when gate is missing/failed.
+
 ## [0.2.0] - 2026-07-19
 
 ### Added

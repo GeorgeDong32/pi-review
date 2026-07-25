@@ -4,7 +4,7 @@
  * Mirrors Claude code-review steps 2–3 (rule file paths + change summary).
  * v0.2 uses synchronous heuristics — no extra LLM spawn.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 
 export interface PrepContext {
@@ -36,7 +36,6 @@ export function discoverRulePaths(cwd: string): string[] {
 	const rulesDir = join(cwd, ".pi", "rules");
 	if (existsSync(rulesDir)) {
 		try {
-			const { readdirSync } = require("node:fs") as typeof import("node:fs");
 			for (const entry of readdirSync(rulesDir)) {
 				if (typeof entry === "string" && entry.endsWith(".md")) {
 					found.push(relative(cwd, join(rulesDir, entry)) || join(".pi/rules", entry));
@@ -49,7 +48,6 @@ export function discoverRulePaths(cwd: string): string[] {
 	const agentsRules = join(cwd, ".agents", "rules");
 	if (existsSync(agentsRules)) {
 		try {
-			const { readdirSync } = require("node:fs") as typeof import("node:fs");
 			for (const entry of readdirSync(agentsRules)) {
 				if (typeof entry === "string" && entry.endsWith(".md")) {
 					found.push(relative(cwd, join(agentsRules, entry)) || join(".agents/rules", entry));

@@ -230,6 +230,12 @@ export async function runSubagent(opts: SpawnOptions): Promise<SpawnResult> {
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 
+	// Drain stdout so a chatty child cannot fill the pipe and deadlock.
+	const stdout = child.stdout;
+	if (stdout) {
+		stdout.resume();
+	}
+
 	// Capture stderr tail for diagnostics.
 	let stderrBuf = "";
 	const stderr = child.stderr;
@@ -301,6 +307,17 @@ export async function runSubagent(opts: SpawnOptions): Promise<SpawnResult> {
 				settle({
 					ok: false,
 					error: `schema validation failed: ${validation.errors.join("; ")}`,
+					exitCode: code,
+					durationMs,
+					stderrTail: stderrBuf.slice(-512),
+				});
+				return;
+			}
+
+			if (code !== 0 && code !== null) {
+				settle({
+					ok: false,
+					error: `non-zero exit ${code} (structured output was present but process failed)`,
 					exitCode: code,
 					durationMs,
 					stderrTail: stderrBuf.slice(-512),

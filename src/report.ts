@@ -94,7 +94,11 @@ function renderVerdictLine(report: ReviewReport): string {
 	const label = v === "no-gate" ? "NO GATE" : v === "error" ? "ERROR" : v.toUpperCase();
 	const t = report.totals.bySeverity;
 	const counts = `${t.blocker} blockers · ${t.major} major · ${t.minor} minor · ${t.nit} nit`;
-	return `**Verdict: ${label}** (${counts})`;
+	const unfiltered =
+		(!report.gate || !report.gate.ok) && report.verdict !== "error"
+			? " · unfiltered reviewer totals"
+			: "";
+	return `**Verdict: ${label}** (${counts}${unfiltered})`;
 }
 
 function renderSummaryLine(report: ReviewReport): string {
@@ -138,7 +142,7 @@ function renderGateSection(g: GateRunResult): string {
 	const issues = v.issues;
 	const noHighConfidence =
 		v.verdict === "approve" && issues.length === 0 && v.reason.toLowerCase().includes("no high-confidence");
-	return [
+	const lines = [
 		`### gate (${g.model}) — ok · ${(g.durationMs / 1000).toFixed(1)}s`,
 		"",
 		`- verdict: ${v.verdict}`,
@@ -146,6 +150,13 @@ function renderGateSection(g: GateRunResult): string {
 		noHighConfidence
 			? "- no high-confidence issues after dedupe + threshold"
 			: `- ${issues.length} issue${issues.length === 1 ? "" : "s"} after dedupe + threshold`,
-		"",
-	].join("\n");
+	];
+	for (const issue of issues) {
+		const loc = issue.line !== undefined ? `${issue.file}:${issue.line}` : issue.file;
+		lines.push(
+			`- [${issue.severity.toUpperCase()} · ${issue.category} · conf ${issue.confidence}] \`${loc}\` — ${issue.evidence}`,
+		);
+	}
+	lines.push("");
+	return lines.join("\n");
 }

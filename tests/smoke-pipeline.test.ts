@@ -55,6 +55,7 @@ describe("smoke pipeline", () => {
 		assert.equal(result.kind, "dry-run");
 		const plan = (result as { plan: string }).plan;
 		assert.match(plan, /threshold: 8/);
+		assert.match(plan, /scorePerIssue: blocker-major/);
 		assert.match(plan, /bugbot/);
 		assert.match(plan, /security-review/);
 		assert.match(plan, /history-context/);

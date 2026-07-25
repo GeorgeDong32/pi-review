@@ -61,6 +61,12 @@ describe("mergeWithDefaults", () => {
 		assert.equal(merged.gate.thinking, "high");
 		assert.equal(merged.gate.enabled, false);
 		assert.equal(merged.gate.threshold, 7);
+		assert.equal(merged.gate.scorePerIssue, "blocker-major");
+	});
+
+	test("merges gate.scorePerIssue", () => {
+		const merged = mergeWithDefaults({ gate: { scorePerIssue: "off" } });
+		assert.equal(merged.gate.scorePerIssue, "off");
 	});
 
 	test("clamps concurrency to [1, MAX_PARALLEL_CONCURRENCY]", () => {

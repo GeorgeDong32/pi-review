@@ -7,7 +7,7 @@ Pattern ported from the Claude code-review plugin: eligibility → prep → para
 ## Commands
 
 ```text
-/review [path | @path] [--threshold N] [--reviewer id ...] [--no-gate] [--gate-model id] [--no-spawn]
+/review [path | @path] [--threshold N] [--reviewer id ...] [--no-gate] [--gate-model id] [--score-per-issue off|blocker-major|all] [--no-spawn]
 /review-config
 /review-agents
 ```
@@ -26,10 +26,11 @@ Flags:
 
 | Flag | Effect |
 |---|---|
-| `--threshold N` | Override the confidence floor (0-10). Issues with `confidence < N` are dropped by the gate. Default **8**. |
+| `--threshold N` | Override the confidence floor (0-10, clamped). Issues with `confidence < N` are dropped by code-side gate enforce. Default **8**. |
 | `--reviewer id` | Restrict the run to a specific reviewer. Repeatable. |
 | `--no-gate` | Skip the gate step. Useful for fast iteration when you only want raw reviewer output. |
 | `--gate-model id` | Override the gate's model for this run. |
+| `--score-per-issue MODE` | `off` / `blocker-major` (default) / `all` — Claude-style parallel per-issue scorers after the gate LLM. |
 | `--no-spawn` | Dry run — print the resolved reviewer list, gate model, threshold, and exit. |
 
 ## Bundled reviewers (v0.2 default)
@@ -47,10 +48,15 @@ Flags:
 
 ```text
 eligibility → prep (rule paths + diff summary) → 5 reviewers (parallel, cap 4)
-  → gate (re-score + dedupe + threshold) → markdown report
+  → gate LLM (full diff + re-score)
+  → optional per-issue scorers (blocker/major by default)
+  → code enforce (dedupe + threshold + verdict)
+  → markdown report
 ```
 
-The gate uses `structured_output` via a child capture extension (`src/structured-output-capture.ts`).
+Lighter than Claude's code-review plugin (which scores **every** issue with a dedicated Haiku), but keeps the same two-level idea: parallel find → independent confidence filter. The parent always re-applies threshold and verdict rules in code so LLM mistakes cannot approve leftover blockers.
+
+The gate / scorers use `structured_output` via a child capture extension (`src/structured-output-capture.ts`).
 
 ## Configuration
 
@@ -70,8 +76,10 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
     "model": "inherit",
     "thinking": "low",
     "enabled": true,
-    // Issues with confidence < threshold are dropped by the gate.
-    "threshold": 3
+    // Issues with confidence < threshold are dropped (code-enforced).
+    "threshold": 8,
+    // Parallel per-issue scorers: "off" | "blocker-major" | "all"
+    "scorePerIssue": "blocker-major"
   },
   "concurrency": 4,            // hard cap = 4
   "reviewers": {
@@ -80,7 +88,7 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
       "thinking": "high",
       "enabled": true
     },
-    "bug-detector": {
+    "bugbot": {
       "model": "inherit",
       "thinking": "medium"
       // tools inherit from inheritance.toolsDefault

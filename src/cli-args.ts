@@ -2,6 +2,9 @@
  * Parse `/review` command arguments (flags + optional path).
  */
 
+import { clampThreshold, parseScorePerIssueMode } from "./config.js";
+import type { ScorePerIssueMode } from "./types.js";
+
 export interface ParsedReviewArgs {
 	/** Positional path or `@file` (mutually exclusive with default git diff). */
 	path?: string;
@@ -10,6 +13,7 @@ export interface ParsedReviewArgs {
 	noGate: boolean;
 	gateModel?: string;
 	noSpawn: boolean;
+	scorePerIssue?: ScorePerIssueMode;
 }
 
 export function parseReviewArgs(raw: string): ParsedReviewArgs {
@@ -24,7 +28,7 @@ export function parseReviewArgs(raw: string): ParsedReviewArgs {
 		const t = tokens[i];
 		if (t === "--threshold") {
 			const n = Number(tokens[++i]);
-			if (Number.isFinite(n)) result.threshold = n;
+			if (Number.isFinite(n)) result.threshold = clampThreshold(n);
 			continue;
 		}
 		if (t === "--reviewer") {
@@ -38,6 +42,11 @@ export function parseReviewArgs(raw: string): ParsedReviewArgs {
 		}
 		if (t === "--gate-model") {
 			result.gateModel = tokens[++i];
+			continue;
+		}
+		if (t === "--score-per-issue") {
+			const mode = parseScorePerIssueMode(tokens[++i] ?? "");
+			if (mode) result.scorePerIssue = mode;
 			continue;
 		}
 		if (t === "--no-spawn") {

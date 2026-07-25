@@ -166,9 +166,6 @@ export async function resolveInputFromPath(cwd: string, pathArg: string): Promis
 }
 
 function joinSafe(cwd: string, file: string): string {
-	// Lazy require to avoid bundling path in unit tests that only use mock.
-	// eslint-disable-next-line @typescript-eslint/no-require-imports
-	const { join } = require("node:path") as typeof import("node:path");
 	return join(cwd, file);
 }
 
