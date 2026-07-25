@@ -8,19 +8,17 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { parseReviewArgs } from "../src/cli-args.js";
-import { runReviewPipeline } from "../src/run.js";
+import { runReviewPipeline, type ReviewPipelineContext } from "../src/run.js";
 
-function mockCtx(cwd: string) {
+function mockCtx(cwd: string): ReviewPipelineContext {
 	return {
 		cwd,
 		hasUI: false,
 		model: { provider: "google", id: "gemini-2.5-flash" },
 		ui: {
 			notify: () => {},
-			setStatus: () => {},
-			editor: async () => undefined,
 		},
-	} as Parameters<typeof runReviewPipeline>[0]["ctx"];
+	};
 }
 
 describe("smoke pipeline", () => {

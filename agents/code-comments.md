@@ -32,4 +32,6 @@ You are the code-comments reviewer. Read **inline comments in files touched by t
 
 ## Output
 
+- `evidence` is one short sentence (≤ 280 chars).
+
 Call `structured_output` exactly once. Use `category: "other"` or `docs` as appropriate.

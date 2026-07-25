@@ -50,7 +50,7 @@ If **no issues** pass threshold → `verdict: approve`, empty `issues`, reason n
 
 ## Output
 
-Call `structured_output` exactly once:
+Call `structured_output` exactly once with **exactly** these top-level keys: `verdict`, `issues` (array), `reason`.
 
 ```json
 {

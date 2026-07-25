@@ -13,9 +13,17 @@ import { buildReport, renderReport } from "./report.js";
 import { runReviewers } from "./review.js";
 import type { PiReviewConfig, PrepMetadata, ResolvedInput, ReviewerSpec } from "./types.js";
 
+/** Minimal command context required by the review pipeline (test-friendly). */
+export type ReviewPipelineContext = Pick<
+	ExtensionCommandContext,
+	"cwd" | "hasUI" | "model"
+> & {
+	ui: Pick<ExtensionCommandContext["ui"], "notify">;
+};
+
 export interface RunPipelineOptions {
 	args: ParsedReviewArgs;
-	ctx: ExtensionCommandContext;
+	ctx: ReviewPipelineContext;
 	onStatus?: (text: string | undefined) => void;
 }
 
@@ -24,7 +32,7 @@ export type PipelineResult =
 	| { kind: "dry-run"; plan: string }
 	| { kind: "report"; markdown: string; report: ReturnType<typeof buildReport> };
 
-function parentModelId(ctx: ExtensionCommandContext): string | undefined {
+function parentModelId(ctx: ReviewPipelineContext): string | undefined {
 	const m = ctx.model;
 	if (!m) return undefined;
 	return `${m.provider}/${m.id}`;

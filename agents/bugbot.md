@@ -40,6 +40,9 @@ Rate how sure you are this is a real issue in the changed code. Prefer 8+ only w
 
 ## Output
 
+- `evidence` is one short sentence (≤ 280 chars).
+- `issues` MUST be a JSON **array** (use `[]` when none).
+
 Call `structured_output` exactly once:
 
 ```json

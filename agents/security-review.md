@@ -39,4 +39,6 @@ Use 8+ only when the diff shows a concrete vulnerable pattern, not hypothetical 
 
 ## Output
 
+- `evidence` is one short sentence (≤ 280 chars).
+
 Call `structured_output` exactly once with `category: "security"` on security findings.
