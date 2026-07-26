@@ -72,6 +72,10 @@ export function renderReport(report: ReviewReport): string {
 	lines.push("");
 	lines.push(renderVerdictLine(report));
 	lines.push(renderSummaryLine(report));
+	if (report.input.userContext?.trim()) {
+		lines.push("");
+		lines.push(`_Request: ${report.input.userContext.trim()}_`);
+	}
 	if (report.prep) {
 		lines.push("");
 		lines.push(`_Rules: ${report.prep.rulePaths.join(", ") || "none"} · ${report.prep.summary}_`);

@@ -1,13 +1,19 @@
 /**
- * Parse `/review` command arguments (flags + optional path).
+ * Parse `/review` command arguments (flags + freeform user input).
+ *
+ * CC alignment: text after flags is **user context** for the review (PR URL,
+ * PR number, natural language) — not a filesystem path. Use `--diff` for an
+ * explicit diff file.
  */
 
 import { clampThreshold, parseScorePerIssueMode } from "./config.js";
 import type { ScorePerIssueMode } from "./types.js";
 
 export interface ParsedReviewArgs {
-	/** Positional path or `@file` (mutually exclusive with default git diff). */
-	path?: string;
+	/** Freeform user context (CC-style), e.g. PR URL or instructions. */
+	input?: string;
+	/** Explicit diff file via `--diff path` or `--diff @file`. */
+	diffPath?: string;
 	threshold?: number;
 	reviewers: string[];
 	noGate: boolean;
@@ -23,6 +29,7 @@ export function parseReviewArgs(raw: string): ParsedReviewArgs {
 		noGate: false,
 		noSpawn: false,
 	};
+	const inputParts: string[] = [];
 
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i];
@@ -53,13 +60,20 @@ export function parseReviewArgs(raw: string): ParsedReviewArgs {
 			result.noSpawn = true;
 			continue;
 		}
+		if (t === "--diff") {
+			const path = tokens[++i];
+			if (path) result.diffPath = path;
+			continue;
+		}
 		if (t.startsWith("-")) {
 			continue;
 		}
-		// First positional non-flag → path
-		if (!result.path) {
-			result.path = t;
-		}
+		inputParts.push(t);
+	}
+
+	const input = inputParts.join(" ").trim();
+	if (input.length > 0) {
+		result.input = input;
 	}
 
 	return result;

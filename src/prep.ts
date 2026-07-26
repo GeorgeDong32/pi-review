@@ -95,17 +95,29 @@ export function prepareContext(cwd: string, diff: string): PrepContext {
 }
 
 /** Format prep block + diff for reviewer/gate task text. */
-export function formatReviewTask(prep: PrepContext, diff: string): string {
+export function formatReviewTask(prep: PrepContext, diff: string, userInput?: string): string {
 	const rules =
 		prep.rulePaths.length > 0
 			? prep.rulePaths.map((p) => `- ${p}`).join("\n")
 			: "- (no AGENTS.md / CLAUDE.md / .pi rules found at repo root)";
 
-	return [
+	const blocks = [
 		"# Review task",
 		"",
 		"## Context",
 		"",
+	];
+
+	if (userInput?.trim()) {
+		blocks.push(
+			"### User request",
+			"",
+			userInput.trim(),
+			"",
+		);
+	}
+
+	blocks.push(
 		"### Rule files (paths only — read as needed)",
 		rules,
 		"",
@@ -119,5 +131,7 @@ export function formatReviewTask(prep: PrepContext, diff: string): string {
 		"## Output",
 		"",
 		"Call the `structured_output` tool exactly once with JSON matching the schema from your instructions. Do not reply in prose.",
-	].join("\n");
+	);
+
+	return blocks.join("\n");
 }

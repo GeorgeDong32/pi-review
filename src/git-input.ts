@@ -13,7 +13,15 @@
  * without forking a real repo.
  */
 import { isAbsolute, join } from "node:path";
+import { extractPrRef } from "./pr-ref.js";
 import type { ResolvedInput } from "./types.js";
+
+export interface ResolveReviewInputOptions {
+	/** CC-style freeform user context (not a filesystem path). */
+	input?: string;
+	/** Explicit diff file via `--diff`. */
+	diffPath?: string;
+}
 
 /** Minimal git invocation. Tests inject a fake. */
 export type RunGit = (args: string[], opts: { cwd: string }) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
@@ -153,8 +161,12 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
 	return r.exitCode === 0;
 }
 
-/** Load diff content from a user path or `@file` reference. */
-export async function resolveInputFromPath(cwd: string, pathArg: string): Promise<ResolvedInput> {
+/** Load diff content from an explicit `--diff` path or `@file` reference. */
+export async function resolveInputFromPath(
+	cwd: string,
+	pathArg: string,
+	userContext?: string,
+): Promise<ResolvedInput> {
 	const raw = pathArg.startsWith("@") ? pathArg.slice(1) : pathArg;
 	const abs = isAbsolute(raw) ? raw : join(cwd, raw);
 	const content = await _readFile(abs);
@@ -162,7 +174,96 @@ export async function resolveInputFromPath(cwd: string, pathArg: string): Promis
 		content,
 		source: { kind: "path", path: abs },
 		label: raw.split("/").pop() ?? raw,
+		userContext,
 	};
+}
+
+/** Minimal gh invocation. Tests inject a fake. */
+export type RunGh = (args: string[], opts: { cwd: string }) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+
+let _runGh: RunGh = defaultRunGh;
+
+export function setRunGh(fn: RunGh): void {
+	_runGh = fn;
+}
+
+export function resetRunGh(): void {
+	_runGh = defaultRunGh;
+}
+
+async function defaultRunGh(args: string[], opts: { cwd: string }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+	const { spawn } = await import("node:child_process");
+	return new Promise((resolve) => {
+		try {
+			const child = spawn("gh", args, {
+				cwd: opts.cwd,
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout?.setEncoding("utf-8");
+			child.stderr?.setEncoding("utf-8");
+			child.stdout?.on("data", (d: string) => (stdout += d));
+			child.stderr?.on("data", (d: string) => (stderr += d));
+			child.on("error", () => resolve({ stdout, stderr, exitCode: 1 }));
+			child.on("close", (code) => resolve({ stdout, stderr, exitCode: code ?? 1 }));
+		} catch {
+			resolve({ stdout: "", stderr: "", exitCode: 1 });
+		}
+	});
+}
+
+async function resolveGhPrDiff(cwd: string, prRef: string, userContext?: string): Promise<ResolvedInput | null> {
+	const diff = await _runGh(["pr", "diff", prRef], { cwd });
+	if (diff.exitCode !== 0 || diff.stdout.trim().length === 0) {
+		return null;
+	}
+	const label = prRef.match(/pull\/(\d+)/i)?.[1] ?? prRef.replace(/^https?:\/\//, "");
+	return {
+		content: diff.stdout,
+		source: { kind: "pr", ref: prRef },
+		label: `PR ${label}`,
+		userContext,
+	};
+}
+
+/**
+ * Resolve review input (CC-aligned):
+ * - `--diff` → explicit diff file
+ * - user input with PR ref → `gh pr diff`
+ * - otherwise → default git diff + user input as context
+ */
+export async function resolveReviewInput(cwd: string, opts: ResolveReviewInputOptions): Promise<ResolvedInput | null> {
+	const userContext = opts.input?.trim() || undefined;
+
+	if (opts.diffPath) {
+		return resolveInputFromPath(cwd, opts.diffPath, userContext);
+	}
+
+	const prRef = userContext ? extractPrRef(userContext) : null;
+	if (prRef) {
+		const fromGh = await resolveGhPrDiff(cwd, prRef, userContext);
+		if (fromGh) return fromGh;
+		throw new Error(
+			`Could not fetch PR diff via gh (${prRef}). Install/authenticate gh and run from the repo, or pass --diff @file.diff.`,
+		);
+	}
+
+	const defaultDiff = await resolveDefaultDiff(cwd);
+	if (!defaultDiff) {
+		return null;
+	}
+
+	return {
+		...defaultDiff,
+		userContext,
+		label: userContext ? `${defaultDiff.label} · ${summarizeUserContext(userContext)}` : defaultDiff.label,
+	};
+}
+
+function summarizeUserContext(text: string): string {
+	const oneLine = text.replace(/\s+/g, " ").trim();
+	return oneLine.length > 72 ? `${oneLine.slice(0, 69)}...` : oneLine;
 }
 
 function joinSafe(cwd: string, file: string): string {

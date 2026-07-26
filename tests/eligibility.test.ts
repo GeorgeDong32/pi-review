@@ -5,13 +5,13 @@ import { checkEligibility, isTrivialDiff } from "../src/eligibility.js";
 
 describe("checkEligibility", () => {
 	test("rejects empty diff without explicit path", () => {
-		const r = checkEligibility({ resolved: null, hasExplicitPath: false, isGitRepo: true });
+		const r = checkEligibility({ resolved: null, hasExplicitInput: false, isGitRepo: true });
 		assert.equal(r.eligible, false);
 		if (!r.eligible) assert.match(r.reason, /empty/i);
 	});
 
 	test("rejects non-git without path", () => {
-		const r = checkEligibility({ resolved: null, hasExplicitPath: false, isGitRepo: false });
+		const r = checkEligibility({ resolved: null, hasExplicitInput: false, isGitRepo: false });
 		assert.equal(r.eligible, false);
 	});
 
@@ -31,7 +31,7 @@ describe("checkEligibility", () => {
 				source: { kind: "uncommitted" },
 				label: "test",
 			},
-			hasExplicitPath: false,
+			hasExplicitInput: false,
 			isGitRepo: true,
 		});
 		assert.equal(r.eligible, true);

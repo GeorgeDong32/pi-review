@@ -4,7 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.1] - 2026-07-26
+
+### Changed
+- **CC-aligned `/review` args:** positional text is **user context** (PR URL/number, instructions), not a filesystem path. Fixes `ENOENT` when passing GitHub PR links.
+- PR URLs/numbers resolve via `gh pr diff`; explicit diff files use `--diff @file.diff`.
+
+### Added
+- `src/pr-ref.ts` — extract PR refs from freeform input (handles CJK punctuation like `，review`).
+
+[0.3.1]: https://github.com/GeorgeDong32/pi-review/compare/v0.3.0...v0.3.1
+
+## [0.3.0] - 2026-07-26
 
 ### Added
 - **Code-side gate enforce** (`src/gate-enforce.ts`): deterministic dedupe + threshold filter + verdict rules after the gate LLM (Claude Phase 5 equivalent).
@@ -15,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Fixed
 - Spawn: drain stdout to avoid pipe deadlock; reject non-zero child exit even when `output.json` exists.
 - Report: list final gate issues in markdown; mark unfiltered totals when gate is missing/failed.
+- ESM: replace `require()` in `paths.ts` / `prep.ts` / `git-input.ts` so `tsx --test` works under pure ESM.
+
+[0.3.0]: https://github.com/GeorgeDong32/pi-review/compare/v0.2.0...v0.3.0
 
 ## [0.2.0] - 2026-07-19
 

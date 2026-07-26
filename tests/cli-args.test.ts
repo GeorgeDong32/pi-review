@@ -4,17 +4,26 @@ import { describe, test } from "node:test";
 import { parseReviewArgs } from "../src/cli-args.js";
 
 describe("parseReviewArgs", () => {
-	test("parses flags and path", () => {
-		const p = parseReviewArgs("--threshold 7 --reviewer bugbot --no-gate ./foo.diff");
+	test("parses flags and freeform input (CC-style)", () => {
+		const p = parseReviewArgs(
+			"--threshold 7 --reviewer bugbot --no-gate https://github.com/org/repo/pull/42",
+		);
 		assert.equal(p.threshold, 7);
 		assert.deepEqual(p.reviewers, ["bugbot"]);
 		assert.equal(p.noGate, true);
-		assert.equal(p.path, "./foo.diff");
+		assert.equal(p.input, "https://github.com/org/repo/pull/42");
+		assert.equal(p.diffPath, undefined);
 	});
 
-	test("parses @file path", () => {
-		const p = parseReviewArgs("@./changes.patch");
-		assert.equal(p.path, "@./changes.patch");
+	test("parses --diff for explicit diff files", () => {
+		const p = parseReviewArgs("--diff @./changes.patch");
+		assert.equal(p.diffPath, "@./changes.patch");
+		assert.equal(p.input, undefined);
+	});
+
+	test("joins remaining tokens into input", () => {
+		const p = parseReviewArgs("review PR 17206 for backup changes");
+		assert.equal(p.input, "review PR 17206 for backup changes");
 	});
 
 	test("clamps --threshold to 0–10", () => {

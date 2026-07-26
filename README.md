@@ -7,20 +7,35 @@ Pattern ported from the Claude code-review plugin: eligibility → prep → para
 ## Commands
 
 ```text
-/review [path | @path] [--threshold N] [--reviewer id ...] [--no-gate] [--gate-model id] [--score-per-issue off|blocker-major|all] [--no-spawn]
+/review [user context ...] [--diff path | @file] [--threshold N] [--reviewer id ...] [--no-gate] [--gate-model id] [--score-per-issue off|blocker-major|all] [--no-spawn]
 /review-config
 /review-agents
 ```
 
 ### `/review`
 
+**CC-aligned:** text after `/review` is **user context** (PR URL, PR number, natural-language focus) — not a filesystem path. It is passed to every reviewer/gate in a `### User request` section, like Claude `/code-review` arguments.
+
 When called with no arguments, `/review` resolves a default diff source:
 
 1. If the working tree is dirty (per `git status --porcelain`) → `git diff HEAD` of uncommitted changes.
 2. If the working tree is clean → `git diff <default-branch>...HEAD` (default branch probed from `origin/HEAD` → `main` → `master` → current branch).
-3. Outside a git repo with no path argument → notify the user and exit.
+3. Outside a git repo with no PR/diff input → notify the user and exit.
 
-You can also pass a path to a diff file or `@./relative.diff` to review an explicit input.
+**PR review:** pass a GitHub PR URL or number — pi-review runs `gh pr diff` (requires `gh` in PATH, authenticated):
+
+```text
+/review https://github.com/org/repo/pull/17206
+/review 17206
+/review focus on backup restore — PR 17206
+```
+
+**Explicit diff file:** use `--diff` (not a bare positional path):
+
+```text
+/review --diff @./changes.patch
+/review focus on auth --diff /tmp/pr.diff
+```
 
 Flags:
 
@@ -32,6 +47,7 @@ Flags:
 | `--gate-model id` | Override the gate's model for this run. |
 | `--score-per-issue MODE` | `off` / `blocker-major` (default) / `all` — Claude-style parallel per-issue scorers after the gate LLM. |
 | `--no-spawn` | Dry run — print the resolved reviewer list, gate model, threshold, and exit. |
+| `--diff path` | Review an explicit diff file (`@./file.diff` supported). User text before/after flags is still passed as context. |
 
 ## Bundled reviewers (v0.2 default)
 
@@ -181,7 +197,7 @@ tests/*.test.ts           node:test suites
 
 - No retry: a failed reviewer is recorded as `ok=false` and the rest of the run continues. The gate still runs.
 - No worktree isolation: all reviewers share the parent's cwd.
-- No GitHub integration: pass a diff as input. PR comments are not posted.
+- GitHub: `gh pr diff` for PR URLs/numbers; PR comments are not posted.
 - No web config UI: only `$EDITOR`.
 
 ## License

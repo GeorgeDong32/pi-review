@@ -6,7 +6,8 @@ import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 import type { ParsedReviewArgs } from "./cli-args.js";
 import { loadConfig, resolveModel, clampThreshold } from "./config.js";
 import { checkEligibility, recheckBeforeOutput } from "./eligibility.js";
-import { isGitRepo, resolveDefaultDiff, resolveInputFromPath } from "./git-input.js";
+import { isGitRepo, resolveReviewInput } from "./git-input.js";
+import { extractPrRef } from "./pr-ref.js";
 import { runGate } from "./gate.js";
 import { formatReviewTask, prepareContext } from "./prep.js";
 import { buildReport, renderReport } from "./report.js";
@@ -66,15 +67,21 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 
 	const git = await isGitRepo(cwd);
 	let resolved: ResolvedInput | null = null;
-	if (args.path) {
-		resolved = await resolveInputFromPath(cwd, args.path);
-	} else {
-		resolved = await resolveDefaultDiff(cwd);
+	try {
+		resolved = await resolveReviewInput(cwd, {
+			input: args.input,
+			diffPath: args.diffPath,
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return { kind: "skipped", reason: message };
 	}
+
+	const hasExplicitInput = Boolean(args.diffPath || (args.input && extractPrRef(args.input)));
 
 	const eligibility = checkEligibility({
 		resolved,
-		hasExplicitPath: Boolean(args.path),
+		hasExplicitInput,
 		isGitRepo: git,
 	});
 	if (!eligibility.eligible) {
@@ -84,7 +91,7 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	const input = resolved!;
 	const prep = prepareContext(cwd, input.content);
 	const prepMeta: PrepMetadata = { rulePaths: prep.rulePaths, summary: prep.summary };
-	const taskBody = formatReviewTask(prep, input.content);
+	const taskBody = formatReviewTask(prep, input.content, input.userContext);
 
 	const threshold = clampThreshold(args.threshold ?? config.gate.threshold);
 	const reviewers = resolveReviewers(config, args.reviewers, parentModel);

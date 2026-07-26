@@ -133,6 +133,7 @@ export interface PiReviewConfig {
 /** Source descriptor for the diff/prompt that was reviewed. */
 export type InputSource =
 	| { kind: "path"; path: string }
+	| { kind: "pr"; ref: string }
 	| { kind: "uncommitted" }
 	| { kind: "vs-default-branch"; base: string };
 
@@ -142,6 +143,8 @@ export interface ResolvedInput {
 	source: InputSource;
 	/** Short human label for the report header. */
 	label: string;
+	/** CC-style freeform user context (PR URL, instructions, etc.). */
+	userContext?: string;
 }
 
 /** Prep metadata attached to a run (Claude steps 2–3). */

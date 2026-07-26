@@ -49,7 +49,7 @@ describe("smoke pipeline", () => {
 		const diffPath = join(dir, "change.diff");
 		writeFileSync(diffPath, diff);
 
-		const args = parseReviewArgs(`--no-spawn @${diffPath}`);
+		const args = parseReviewArgs(`--no-spawn --diff @${diffPath}`);
 		const result = await runReviewPipeline({ args, ctx: mockCtx(dir) });
 
 		assert.equal(result.kind, "dry-run");
@@ -69,7 +69,7 @@ describe("smoke pipeline", () => {
 		const diffPath = join(dir, "tiny.diff");
 		writeFileSync(diffPath, diff);
 
-		const args = parseReviewArgs(`@${diffPath}`);
+		const args = parseReviewArgs(`--diff @${diffPath}`);
 		const result = await runReviewPipeline({ args, ctx: mockCtx(dir) });
 
 		assert.equal(result.kind, "skipped");

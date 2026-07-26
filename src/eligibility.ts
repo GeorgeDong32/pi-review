@@ -8,8 +8,8 @@ import type { ResolvedInput } from "./types.js";
 
 export interface EligibilityInput {
 	resolved: ResolvedInput | null;
-	/** User passed an explicit path or @file argument. */
-	hasExplicitPath: boolean;
+	/** User passed `--diff` or an explicit PR ref that resolved to a diff. */
+	hasExplicitInput: boolean;
 	/** cwd is inside a git repository. */
 	isGitRepo: boolean;
 }
@@ -23,10 +23,10 @@ const LOCKFILE_ONLY = /^(?:.*\/)?(?:package-lock\.json|yarn\.lock|pnpm-lock\.yam
 /** Run eligibility checks. Returns `{ eligible: false, reason }` to skip review. */
 export function checkEligibility(input: EligibilityInput): EligibilityResult {
 	if (!input.resolved || input.resolved.content.trim().length === 0) {
-		if (!input.isGitRepo && !input.hasExplicitPath) {
+		if (!input.isGitRepo && !input.hasExplicitInput) {
 			return {
 				eligible: false,
-				reason: "Not a git repository. Pass a diff file path or `@./file.diff`.",
+				reason: "Not a git repository. Pass a PR URL/number, use --diff @file.diff, or run inside a git repo.",
 			};
 		}
 		return {
