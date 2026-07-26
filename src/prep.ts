@@ -2,15 +2,17 @@
  * Phase 1 — prep context before content reviewers run.
  *
  * Mirrors Claude code-review steps 2–3 (rule file paths + change summary).
- * v0.2 uses synchronous heuristics — no extra LLM spawn.
+ * v0.4: metadata-only summary; no full diff embed.
  */
 import { existsSync, readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import type { ReviewTarget } from "./types.js";
+
 export interface PrepContext {
 	/** Repo-relative or absolute paths to rule files (paths only, like Claude step 2). */
 	rulePaths: string[];
-	/** Short human summary of the diff. */
+	/** Short human summary of the change (metadata only). */
 	summary: string;
 }
 
@@ -86,16 +88,63 @@ export function summarizeDiff(diff: string): string {
 	return `${files.size} file(s) [${filesPart}]; ${hunks} hunk(s); +${additions}/-${deletions} lines.`;
 }
 
-/** Build prep metadata for a cwd + diff. */
-export function prepareContext(cwd: string, diff: string): PrepContext {
+/** Build prep metadata for a cwd + optional metadata summary. */
+export function prepareContext(cwd: string, summary?: string): PrepContext {
 	return {
 		rulePaths: discoverRulePaths(cwd),
-		summary: summarizeDiff(diff),
+		summary: summary?.trim() || "Agents will discover the change (no pre-embedded diff).",
 	};
 }
 
-/** Format prep block + diff for reviewer/gate task text. */
-export function formatReviewTask(prep: PrepContext, diff: string, userInput?: string): string {
+function obtainChangePlaybook(target: ReviewTarget): string {
+	const lines: string[] = [
+		"### How to obtain the change",
+		"",
+		"You must obtain the change yourself with tools. **No full diff is embedded in this prompt.**",
+		"",
+	];
+
+	if (target.kind === "pr" && target.prRef) {
+		lines.push(
+			`- PR ref: \`${target.prRef}\``,
+			`- Start with \`gh pr view ${target.prRef}\` and try \`gh pr diff ${target.prRef}\``,
+			"- If HTTP 406 / too_large / empty: do **not** stop — use `git fetch` / ensure the PR head is available, then `git diff <base>...HEAD`, or path-scoped diffs / read changed files selectively",
+			"- Prefer reviewing the PR's introduced lines; avoid dumping an entire monorepo into one tool call",
+			"",
+		);
+	} else if (target.kind === "diff-file" && target.diffPath) {
+		lines.push(
+			`- Explicit diff file: \`${target.diffPath}\``,
+			`- Use the \`read\` tool on that path (or \`@${target.diffPath}\` if supported)`,
+			"- Then review only lines introduced in that diff",
+			"",
+		);
+	} else {
+		lines.push(
+			"- Local git review (no PR URL given)",
+			"- Run `git status`",
+			"- If dirty: `git diff HEAD` (and handle untracked files)",
+			"- If clean: `git diff <default-branch>...HEAD` (probe origin/HEAD → main → master)",
+			"",
+		);
+	}
+
+	if (target.hint) {
+		lines.push(`Hint: ${target.hint}`, "");
+	}
+	if (target.probeNote) {
+		lines.push(`Probe note: ${target.probeNote}`, "");
+	}
+
+	lines.push(
+		"Review only lines introduced by this change. Do not flag pre-existing issues elsewhere.",
+		"",
+	);
+	return lines.join("\n");
+}
+
+/** Format prep block + obtain-change playbook for reviewers (no full diff embed). */
+export function formatReviewTask(prep: PrepContext, target: ReviewTarget): string {
 	const rules =
 		prep.rulePaths.length > 0
 			? prep.rulePaths.map((p) => `- ${p}`).join("\n")
@@ -108,25 +157,18 @@ export function formatReviewTask(prep: PrepContext, diff: string, userInput?: st
 		"",
 	];
 
-	if (userInput?.trim()) {
-		blocks.push(
-			"### User request",
-			"",
-			userInput.trim(),
-			"",
-		);
+	if (target.userContext?.trim()) {
+		blocks.push("### User request", "", target.userContext.trim(), "");
 	}
+
+	blocks.push(obtainChangePlaybook(target));
 
 	blocks.push(
 		"### Rule files (paths only — read as needed)",
 		rules,
 		"",
-		"### Change summary",
+		"### Change summary (metadata only)",
 		prep.summary,
-		"",
-		"## Diff",
-		"",
-		diff,
 		"",
 		"## Output",
 		"",
@@ -134,4 +176,21 @@ export function formatReviewTask(prep: PrepContext, diff: string, userInput?: st
 	);
 
 	return blocks.join("\n");
+}
+
+/** Short context block for gate / issue scorers (no full diff). */
+export function formatGateContext(prep: PrepContext, target: ReviewTarget): string {
+	const parts = [
+		`Target: ${target.label}`,
+		`Kind: ${target.kind}`,
+	];
+	if (target.prRef) parts.push(`PR: ${target.prRef}`);
+	if (target.diffPath) parts.push(`Diff file: ${target.diffPath}`);
+	if (target.userContext?.trim()) parts.push(`User request: ${target.userContext.trim()}`);
+	parts.push(`Summary: ${prep.summary}`);
+	if (prep.rulePaths.length > 0) {
+		parts.push(`Rules: ${prep.rulePaths.join(", ")}`);
+	}
+	if (target.probeNote) parts.push(`Note: ${target.probeNote}`);
+	return parts.join("\n");
 }

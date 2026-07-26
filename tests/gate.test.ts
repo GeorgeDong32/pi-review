@@ -57,25 +57,24 @@ afterEach(() => {
 });
 
 describe("renderGatePrompt", () => {
-	test("includes full change under review (not truncated)", () => {
-		const longBody = "x".repeat(3000);
+	test("does not embed a full diff body", () => {
 		const prompt = renderGatePrompt({
 			reviewers: [],
-			promptBody: longBody,
+			gateContext: "Target: PR 1\nKind: pr",
 			gateModel: "anthropic/claude-haiku-4-5",
 			threshold: 5,
 			cwd: "/tmp",
 			config: DEFAULT_CONFIG,
 		});
-		assert.ok(prompt.includes("<diff>"));
-		assert.ok(prompt.includes(longBody));
-		assert.ok(!prompt.includes(longBody.slice(0, 2000) + "\n</diff>") || prompt.includes(longBody));
+		assert.ok(prompt.includes("metadata only"));
+		assert.ok(!prompt.includes("<diff>"));
+		assert.ok(prompt.includes("Target: PR 1"));
 	});
 
 	test("includes threshold line", () => {
 		const prompt = renderGatePrompt({
 			reviewers: [],
-			promptBody: "diff body",
+			gateContext: "diff body",
 			gateModel: "anthropic/claude-haiku-4-5",
 			threshold: 5,
 			cwd: "/tmp",
@@ -105,7 +104,7 @@ describe("renderGatePrompt", () => {
 		];
 		const prompt = renderGatePrompt({
 			reviewers,
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "x",
 			threshold: 3,
 			cwd: "/tmp",
@@ -122,7 +121,7 @@ describe("renderGatePrompt", () => {
 			reviewers: [
 				{ id: "bug", label: "Bug", model: "x", ok: false, error: "timeout", durationMs: 1000 },
 			],
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "x",
 			threshold: 3,
 			cwd: "/tmp",
@@ -151,7 +150,7 @@ describe("runGate", () => {
 		});
 		const result = await runGate({
 			reviewers: [],
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "anthropic/claude-haiku-4-5",
 			threshold: 3,
 			cwd: scratchDir,
@@ -194,7 +193,7 @@ describe("runGate", () => {
 		});
 		const result = await runGate({
 			reviewers: [],
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "haiku",
 			threshold: 8,
 			cwd: scratchDir,
@@ -215,7 +214,7 @@ describe("runGate", () => {
 		});
 		const result = await runGate({
 			reviewers: [],
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "x",
 			threshold: 3,
 			cwd: scratchDir,
@@ -234,7 +233,7 @@ describe("runGate", () => {
 		});
 		const result = await runGate({
 			reviewers: [],
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "x",
 			threshold: 3,
 			cwd: scratchDir,
@@ -257,7 +256,7 @@ describe("runGate", () => {
 		});
 		const result = await runGate({
 			reviewers: [],
-			promptBody: "diff",
+			gateContext: "diff",
 			gateModel: "x",
 			threshold: 3,
 			cwd: scratchDir,

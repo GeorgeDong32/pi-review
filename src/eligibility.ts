@@ -1,17 +1,23 @@
 /**
  * Phase 0 — eligibility checks before spawning reviewers.
  *
- * Mirrors Claude code-review step 1 (skip closed/trivial/empty). Local
- * adaptation: empty diff, non-git without explicit path, trivial lockfile-only.
+ * v0.4: agent-driven — eligible with PR ref / --diff / git repo without a
+ * pre-fetched diff body. Trivial lockfile skip only when a short local probe
+ * is available.
  */
-import type { ResolvedInput } from "./types.js";
+import type { ReviewTarget } from "./types.js";
 
 export interface EligibilityInput {
-	resolved: ResolvedInput | null;
-	/** User passed `--diff` or an explicit PR ref that resolved to a diff. */
+	target: ReviewTarget | null;
+	/** User passed `--diff` or a PR ref. */
 	hasExplicitInput: boolean;
 	/** cwd is inside a git repository. */
 	isGitRepo: boolean;
+	/**
+	 * Optional short local diff probe (only when cheaply available). When set
+	 * and trivial, skip. When absent, do not require non-empty content.
+	 */
+	probedDiff?: string | null;
 }
 
 export type EligibilityResult =
@@ -22,7 +28,7 @@ const LOCKFILE_ONLY = /^(?:.*\/)?(?:package-lock\.json|yarn\.lock|pnpm-lock\.yam
 
 /** Run eligibility checks. Returns `{ eligible: false, reason }` to skip review. */
 export function checkEligibility(input: EligibilityInput): EligibilityResult {
-	if (!input.resolved || input.resolved.content.trim().length === 0) {
+	if (!input.target) {
 		if (!input.isGitRepo && !input.hasExplicitInput) {
 			return {
 				eligible: false,
@@ -31,11 +37,11 @@ export function checkEligibility(input: EligibilityInput): EligibilityResult {
 		}
 		return {
 			eligible: false,
-			reason: "No changes to review (empty diff).",
+			reason: "Nothing to review (could not resolve a PR, diff file, or local git target).",
 		};
 	}
 
-	if (isTrivialDiff(input.resolved.content)) {
+	if (input.probedDiff != null && input.probedDiff.trim().length > 0 && isTrivialDiff(input.probedDiff)) {
 		return {
 			eligible: false,
 			reason: "Diff is trivial (lockfile-only or fewer than 3 changed lines).",
@@ -46,15 +52,15 @@ export function checkEligibility(input: EligibilityInput): EligibilityResult {
 }
 
 /** Re-check before render (Claude phase 6 lite). */
-export function recheckBeforeOutput(resolved: ResolvedInput | null): EligibilityResult {
-	if (!resolved || resolved.content.trim().length === 0) {
-		return { eligible: false, reason: "Diff became empty before output." };
+export function recheckBeforeOutput(target: ReviewTarget | null): EligibilityResult {
+	if (!target) {
+		return { eligible: false, reason: "Review target disappeared before output." };
 	}
 	return { eligible: true };
 }
 
 /**
- * Heuristic trivial diff detection (v0.2).
+ * Heuristic trivial diff detection.
  * - Fewer than 3 non-header diff lines
  * - Only lockfile paths in diff headers
  */

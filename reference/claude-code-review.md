@@ -120,12 +120,14 @@ Scorers are instructed to down-rank:
 
 ## Implications for pi-review
 
-| Claude phase | Local skills adaptation |
+| Claude phase | pi-review adaptation (v0.4) |
 |--------------|-------------------------|
-| 1 Eligibility | Empty diff, non-git, optional trivial-diff skip |
-| 2 Prep | Rule-file paths + short diff summary (no `gh`) |
-| 3 Content (5) | Map to bundled reviewer prompts; drop/replace GH-only agents |
-| 4 Scoring | **Gate** = compressed Phase 4+5 (see roadmap), or per-issue scorers later |
-| 5 Filter | Gate threshold (map 80/100 → 8/10) |
-| 6 Re-eligibility | Light re-check before render (optional v0.2) |
-| 7 Output | TUI markdown + `appendEntry`; no `gh` in v1 |
+| 1 Eligibility | PR ref / `--diff` / git repo; optional trivial probe for local-git only |
+| 2 Prep | Rule-file paths + lightweight `gh pr view` / hint metadata (no full diff) |
+| 3 Content (5) | Bundled reviewers **obtain the change themselves** (gh/git/read playbook) |
+| 4 Scoring | Gate + optional per-issue scorers on reviewer evidence (no full diff embed) |
+| 5 Filter | Code-side threshold (map 80/100 → 8/10) |
+| 6 Re-eligibility | Target still present before render |
+| 7 Output | TUI markdown + `appendEntry`; no `gh pr comment` yet |
+
+**v0.4 design note:** Claude `/code-review` is an instruction document for the main agent. pi-review keeps parallel spawn + structured_output + gate enforce in the plugin, but must not hard-fail on `gh pr diff` — oversized PRs are handled inside reviewer tool loops.

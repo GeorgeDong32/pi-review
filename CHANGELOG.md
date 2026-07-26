@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-07-26
+
+### Changed
+- **Agent-driven change acquisition (CC-aligned):** the plugin no longer pre-fetches or embeds a full diff. Reviewers obtain the change via `gh` / `git` / `read` using an obtain-change playbook in the task prompt.
+- Oversized PRs (`gh pr diff` HTTP 406 / too_large) no longer abort the pipeline; agents fall back to git / path-scoped reads.
+- Gate and per-issue scorers receive metadata + reviewer JSON only (no full `<diff>` embed).
+- All content reviewers include `bash` so they can run `gh`/`git`.
+
+### Added
+- `ReviewTarget` + `resolveReviewTarget` (`pr` | `diff-file` | `local-git`).
+- Optional `gh pr view` metadata prep and `probeNote` for dry-run.
+
+[0.4.0]: https://github.com/GeorgeDong32/pi-review/compare/v0.3.1...v0.4.0
+
 ## [0.3.1] - 2026-07-26
 
 ### Changed

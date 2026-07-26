@@ -8,9 +8,8 @@ import { buildReport, renderReport } from "../src/report.js";
 import type { GateRunResult, ReviewerRunResult } from "../src/types.js";
 
 const INPUT = {
-	content: "diff",
-	source: { kind: "uncommitted" as const },
-	label: "uncommitted changes",
+	kind: "local-git" as const,
+	label: "uncommitted changes (agent-fetch)",
 };
 
 const OK_REVIEWER: ReviewerRunResult = {

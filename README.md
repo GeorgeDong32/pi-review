@@ -14,15 +14,15 @@ Pattern ported from the Claude code-review plugin: eligibility → prep → para
 
 ### `/review`
 
-**CC-aligned:** text after `/review` is **user context** (PR URL, PR number, natural-language focus) — not a filesystem path. It is passed to every reviewer/gate in a `### User request` section, like Claude `/code-review` arguments.
+**CC-aligned (v0.4):** text after `/review` is **user context**. The plugin does **not** pre-fetch and embed a full diff. Reviewer subagents obtain the change themselves with `gh` / `git` / `read` (same idea as Claude `/code-review`).
 
-When called with no arguments, `/review` resolves a default diff source:
+When called with no arguments, `/review` targets **local git** and tells agents to:
 
-1. If the working tree is dirty (per `git status --porcelain`) → `git diff HEAD` of uncommitted changes.
-2. If the working tree is clean → `git diff <default-branch>...HEAD` (default branch probed from `origin/HEAD` → `main` → `master` → current branch).
-3. Outside a git repo with no PR/diff input → notify the user and exit.
+1. If the working tree is dirty → use `git diff HEAD` (and untracked files as needed).
+2. If clean → use `git diff <default-branch>...HEAD`.
+3. Outside a git repo with no PR/`--diff` → notify and exit.
 
-**PR review:** pass a GitHub PR URL or number — pi-review runs `gh pr diff` (requires `gh` in PATH, authenticated):
+**PR review:** pass a GitHub PR URL or number. Agents are instructed to try `gh pr view` / `gh pr diff`, and if the diff is too large (GitHub 20k-line limit), fall back to git / path-scoped reads. Oversized PRs no longer fail in the plugin layer.
 
 ```text
 /review https://github.com/org/repo/pull/17206
@@ -30,7 +30,7 @@ When called with no arguments, `/review` resolves a default diff source:
 /review focus on backup restore — PR 17206
 ```
 
-**Explicit diff file:** use `--diff` (not a bare positional path):
+**Explicit diff file:** use `--diff` (path is passed to agents to `read`; not embedded):
 
 ```text
 /review --diff @./changes.patch
@@ -47,24 +47,25 @@ Flags:
 | `--gate-model id` | Override the gate's model for this run. |
 | `--score-per-issue MODE` | `off` / `blocker-major` (default) / `all` — Claude-style parallel per-issue scorers after the gate LLM. |
 | `--no-spawn` | Dry run — print the resolved reviewer list, gate model, threshold, and exit. |
-| `--diff path` | Review an explicit diff file (`@./file.diff` supported). User text before/after flags is still passed as context. |
+| `--diff path` | Point reviewers at an explicit diff file (`@./file.diff` supported). Path only — agents `read` it. |
 
-## Bundled reviewers (v0.2 default)
+## Bundled reviewers (v0.4)
 
 | ID | Purpose | Default | Tools |
 |---|---|---|---|
-| `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, find, ls |
-| `bugbot` | Obvious bugs in the diff only (Cursor-style discipline) | enabled | read, grep, find |
+| `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, find, ls, bash |
+| `bugbot` | Obvious bugs in introduced lines only | enabled | read, grep, find, bash |
 | `history-context` | Git blame / log context on touched files | enabled | read, bash |
-| `security-review` | Security issues introduced by the diff | enabled | read, grep, find |
-| `code-comments` | Inline comment / TODO guidance in changed files | enabled | read, grep, find, ls |
-| `conventions` | De-facto style pass | **disabled** | read, grep, find, ls |
+| `security-review` | Security issues introduced by the change | enabled | read, grep, find, bash |
+| `code-comments` | Inline comment / TODO guidance in changed files | enabled | read, grep, find, ls, bash |
+| `conventions` | De-facto style pass | **disabled** | read, grep, find, ls, bash |
 
 ## Pipeline
 
 ```text
-eligibility → prep (rule paths + diff summary) → 5 reviewers (parallel, cap 4)
-  → gate LLM (full diff + re-score)
+eligibility → prep (rule paths + metadata summary) → 5 reviewers (parallel, cap 4)
+  → each reviewer obtains the change via gh/git/read
+  → gate LLM (reviewer JSON + metadata; no full diff embed)
   → optional per-issue scorers (blocker/major by default)
   → code enforce (dedupe + threshold + verdict)
   → markdown report
@@ -197,7 +198,7 @@ tests/*.test.ts           node:test suites
 
 - No retry: a failed reviewer is recorded as `ok=false` and the rest of the run continues. The gate still runs.
 - No worktree isolation: all reviewers share the parent's cwd.
-- GitHub: `gh pr diff` for PR URLs/numbers; PR comments are not posted.
+- GitHub: agents use `gh`/`git` to obtain PRs; oversized diffs fall back to git. PR comments are not posted.
 - No web config UI: only `$EDITOR`.
 
 ## License

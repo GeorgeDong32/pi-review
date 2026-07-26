@@ -53,7 +53,7 @@ function issueIdentity(issue: Issue): string {
 	return `${issue.file}\0${issue.line ?? "-"}\0${issue.category}\0${issue.evidence}`;
 }
 
-function renderScoreTask(promptBody: string, issue: Issue, index: number): string {
+function renderScoreTask(gateContext: string, issue: Issue, index: number): string {
 	return [
 		"# pi-review — single-issue confidence score",
 		"",
@@ -63,20 +63,18 @@ function renderScoreTask(promptBody: string, issue: Issue, index: number): strin
 		JSON.stringify(issue, null, 2),
 		"```",
 		"",
-		"## Change under review",
+		"## Review context (metadata only — no embedded diff)",
 		"",
-		"<diff>",
-		promptBody,
-		"</diff>",
+		gateContext,
 		"",
-		"Re-score this issue only. Call structured_output once.",
+		"Re-score this issue only from the issue evidence and context. Call structured_output once.",
 	].join("\n");
 }
 
 export interface RunIssueScorersInput {
 	issues: Issue[];
 	mode: ScorePerIssueMode;
-	promptBody: string;
+	gateContext: string;
 	model: string;
 	thinking?: string;
 	cwd: string;
@@ -102,7 +100,7 @@ export async function runIssueScorers(
 		async (issue, index) => {
 			const runtime = createRuntimeDir(`pi-review-score-${index}-`);
 			const taskText = materializeTaskArg(
-				renderScoreTask(input.promptBody, issue, index),
+				renderScoreTask(input.gateContext, issue, index),
 			);
 			const args = buildGateArgs({
 				model: input.model,

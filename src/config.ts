@@ -33,7 +33,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "high",
-			tools: ["read", "grep", "find", "ls"],
+			tools: ["read", "grep", "find", "ls", "bash"],
 		},
 		"bugbot": {
 			id: "bugbot",
@@ -41,7 +41,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find"],
+			tools: ["read", "grep", "find", "bash"],
 		},
 		"history-context": {
 			id: "history-context",
@@ -57,7 +57,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find"],
+			tools: ["read", "grep", "find", "bash"],
 		},
 		"code-comments": {
 			id: "code-comments",
@@ -65,7 +65,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find", "ls"],
+			tools: ["read", "grep", "find", "ls", "bash"],
 		},
 		"conventions": {
 			id: "conventions",
@@ -73,7 +73,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: false,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find", "ls"],
+			tools: ["read", "grep", "find", "ls", "bash"],
 		},
 	},
 	inheritance: {

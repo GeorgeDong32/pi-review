@@ -1,18 +1,23 @@
 /**
- * `/review` pipeline orchestration.
+ * `/review` pipeline orchestration (v0.4 agent-driven).
  */
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
 
 import type { ParsedReviewArgs } from "./cli-args.js";
 import { loadConfig, resolveModel, clampThreshold } from "./config.js";
 import { checkEligibility, recheckBeforeOutput } from "./eligibility.js";
-import { isGitRepo, resolveReviewInput } from "./git-input.js";
+import {
+	fetchPrMetadata,
+	isGitRepo,
+	resolveDefaultDiff,
+	resolveReviewTarget,
+} from "./git-input.js";
 import { extractPrRef } from "./pr-ref.js";
 import { runGate } from "./gate.js";
-import { formatReviewTask, prepareContext } from "./prep.js";
+import { formatGateContext, formatReviewTask, prepareContext } from "./prep.js";
 import { buildReport, renderReport } from "./report.js";
 import { runReviewers } from "./review.js";
-import type { PiReviewConfig, PrepMetadata, ResolvedInput, ReviewerSpec } from "./types.js";
+import type { PiReviewConfig, PrepMetadata, ReviewerSpec, ReviewTarget } from "./types.js";
 
 /** Minimal command context required by the review pipeline (test-friendly). */
 export interface ReviewPipelineContext {
@@ -55,6 +60,21 @@ function resolveReviewers(config: PiReviewConfig, filterIds: string[], parentMod
 	}));
 }
 
+async function buildSummary(cwd: string, target: ReviewTarget): Promise<string> {
+	if (target.kind === "pr" && target.prRef) {
+		const meta = await fetchPrMetadata(cwd, target.prRef);
+		if (meta?.summary) {
+			const note = target.probeNote ? ` ${target.probeNote}.` : "";
+			return meta.summary + note;
+		}
+		return `PR ${target.prRef} (agent-fetch).${target.probeNote ? ` ${target.probeNote}.` : ""}`;
+	}
+	if (target.kind === "diff-file" && target.diffPath) {
+		return `Explicit diff file at ${target.diffPath} (agents will read it; not embedded).`;
+	}
+	return target.hint ?? "Local git changes — agents will discover via git.";
+}
+
 export async function runReviewPipeline(options: RunPipelineOptions): Promise<PipelineResult> {
 	const { args, ctx, onStatus } = options;
 	const cwd = ctx.cwd;
@@ -66,9 +86,9 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	}
 
 	const git = await isGitRepo(cwd);
-	let resolved: ResolvedInput | null = null;
+	let target: ReviewTarget | null = null;
 	try {
-		resolved = await resolveReviewInput(cwd, {
+		target = await resolveReviewTarget(cwd, {
 			input: args.input,
 			diffPath: args.diffPath,
 		});
@@ -79,19 +99,29 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 
 	const hasExplicitInput = Boolean(args.diffPath || (args.input && extractPrRef(args.input)));
 
+	// Cheap trivial probe only for local-git without explicit PR/--diff.
+	let probedDiff: string | null = null;
+	if (target?.kind === "local-git" && !hasExplicitInput) {
+		const probed = await resolveDefaultDiff(cwd);
+		probedDiff = probed?.content ?? null;
+	}
+
 	const eligibility = checkEligibility({
-		resolved,
+		target,
 		hasExplicitInput,
 		isGitRepo: git,
+		probedDiff,
 	});
 	if (!eligibility.eligible) {
 		return { kind: "skipped", reason: eligibility.reason };
 	}
 
-	const input = resolved!;
-	const prep = prepareContext(cwd, input.content);
+	const input = target!;
+	const summary = await buildSummary(cwd, input);
+	const prep = prepareContext(cwd, summary);
 	const prepMeta: PrepMetadata = { rulePaths: prep.rulePaths, summary: prep.summary };
-	const taskBody = formatReviewTask(prep, input.content, input.userContext);
+	const taskBody = formatReviewTask(prep, input);
+	const gateContext = formatGateContext(prep, input);
 
 	const threshold = clampThreshold(args.threshold ?? config.gate.threshold);
 	const reviewers = resolveReviewers(config, args.reviewers, parentModel);
@@ -103,6 +133,7 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 		const lines = [
 			"pi-review dry run",
 			`input: ${input.label}`,
+			`mode: agent-fetch (${input.kind})`,
 			`threshold: ${threshold}`,
 			`scorePerIssue: ${scorePerIssue}`,
 			`reviewers (${reviewers.length}): ${reviewers.map((r) => `${r.id} (${r.model})`).join(", ")}`,
@@ -110,6 +141,7 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 			`prep rules: ${prep.rulePaths.join(", ") || "(none)"}`,
 			`summary: ${prep.summary}`,
 		];
+		if (input.probeNote) lines.push(`probe: ${input.probeNote}`);
 		return { kind: "dry-run", plan: lines.join("\n") };
 	}
 
@@ -133,7 +165,7 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	if (runGateStep) {
 		gateResult = await runGate({
 			reviewers: reviewerResults,
-			promptBody: taskBody,
+			gateContext,
 			gateModel,
 			gateThinking: config.gate.thinking,
 			threshold,

@@ -130,20 +130,43 @@ export interface PiReviewConfig {
 	};
 }
 
-/** Source descriptor for the diff/prompt that was reviewed. */
+/**
+ * What to review — agent-driven (v0.4). The plugin does **not** embed a full
+ * diff; reviewers obtain the change themselves via gh/git/read.
+ */
+export type ReviewTargetKind = "pr" | "diff-file" | "local-git";
+
+export interface ReviewTarget {
+	kind: ReviewTargetKind;
+	/** Short human label for the report header. */
+	label: string;
+	/** CC-style freeform user context (PR URL, instructions, etc.). */
+	userContext?: string;
+	/** Parsed PR URL or number when kind === "pr". */
+	prRef?: string;
+	/** Absolute path to an explicit `--diff` file when kind === "diff-file". */
+	diffPath?: string;
+	/** Hint for local-git: dirty working tree vs base...HEAD. */
+	hint?: string;
+	/**
+	 * Optional short probe note for dry-run (e.g. gh too_large). Never a hard
+	 * failure — agents still fetch.
+	 */
+	probeNote?: string;
+}
+
+/** @deprecated Use ReviewTarget. Kept for tests that still synthesize local diffs. */
 export type InputSource =
 	| { kind: "path"; path: string }
 	| { kind: "pr"; ref: string }
 	| { kind: "uncommitted" }
 	| { kind: "vs-default-branch"; base: string };
 
-/** Resolved input handed to reviewers. */
+/** @deprecated Prefer ReviewTarget; used only by resolveDefaultDiff probes. */
 export interface ResolvedInput {
 	content: string;
 	source: InputSource;
-	/** Short human label for the report header. */
 	label: string;
-	/** CC-style freeform user context (PR URL, instructions, etc.). */
 	userContext?: string;
 }
 
@@ -157,7 +180,7 @@ export interface PrepMetadata {
 export interface ReviewReport {
 	startedAt: number;
 	durationMs: number;
-	input: ResolvedInput;
+	input: ReviewTarget;
 	prep?: PrepMetadata;
 	reviewers: ReviewerRunResult[];
 	gate: GateRunResult | null;

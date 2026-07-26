@@ -4,33 +4,37 @@ import { describe, test } from "node:test";
 import { checkEligibility, isTrivialDiff } from "../src/eligibility.js";
 
 describe("checkEligibility", () => {
-	test("rejects empty diff without explicit path", () => {
-		const r = checkEligibility({ resolved: null, hasExplicitInput: false, isGitRepo: true });
-		assert.equal(r.eligible, false);
-		if (!r.eligible) assert.match(r.reason, /empty/i);
-	});
-
-	test("rejects non-git without path", () => {
-		const r = checkEligibility({ resolved: null, hasExplicitInput: false, isGitRepo: false });
+	test("rejects when no target and not git", () => {
+		const r = checkEligibility({ target: null, hasExplicitInput: false, isGitRepo: false });
 		assert.equal(r.eligible, false);
 	});
 
-	test("accepts non-empty diff", () => {
+	test("accepts PR target without probed diff content", () => {
 		const r = checkEligibility({
-			resolved: {
-				content: [
-					"diff --git a/foo.ts b/foo.ts",
-					"--- a/foo.ts",
-					"+++ b/foo.ts",
-					"@@ -1,3 +1,6 @@",
-					" line1",
-					"+added1",
-					"+added2",
-					"+added3",
-				].join("\n"),
-				source: { kind: "uncommitted" },
-				label: "test",
+			target: {
+				kind: "pr",
+				label: "PR 1 (agent-fetch)",
+				prRef: "https://github.com/org/repo/pull/1",
 			},
+			hasExplicitInput: true,
+			isGitRepo: true,
+		});
+		assert.equal(r.eligible, true);
+	});
+
+	test("rejects trivial probed local diff", () => {
+		const r = checkEligibility({
+			target: { kind: "local-git", label: "uncommitted" },
+			hasExplicitInput: false,
+			isGitRepo: true,
+			probedDiff: "diff --git a/a b/a\n+line\n",
+		});
+		assert.equal(r.eligible, false);
+	});
+
+	test("accepts local-git without probe", () => {
+		const r = checkEligibility({
+			target: { kind: "local-git", label: "vs main (agent-fetch)" },
 			hasExplicitInput: false,
 			isGitRepo: true,
 		});
