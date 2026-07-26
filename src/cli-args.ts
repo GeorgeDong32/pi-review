@@ -22,13 +22,14 @@ export interface ParsedReviewArgs {
 	noSpawn: boolean;
 	/** Single-agent fast mode: one reviewer, no gate. */
 	lite: boolean;
+	/** Override the gate model for this run (otherwise config.gate.model). */
+	gateModel?: string;
 }
 
 /** Removed valued flags — silently skip flag + value to keep input clean. */
 const LEGACY_VALUED_FLAGS = new Set([
 	"--threshold",
 	"--reviewer",
-	"--gate-model",
 	"--score-per-issue",
 	"--diff",
 ]);
@@ -50,6 +51,11 @@ export function parseReviewArgs(raw: string): ParsedReviewArgs {
 		}
 		if (t === "--lite") {
 			result.lite = true;
+			continue;
+		}
+		if (t === "--gate-model") {
+			const id = tokens[++i];
+			if (id) result.gateModel = id;
 			continue;
 		}
 		if (t.startsWith("-")) {

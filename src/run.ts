@@ -53,7 +53,7 @@ function selectReviewers(config: PiReviewConfig, filterIds: string[]): ReviewerS
 	return all.filter((r) => set.has(r.id));
 }
 
-function resolveReviewers(config: PiReviewConfig, filterIds: string[], parentModel: string | undefined): ReviewerSpec[] {
+export function resolveReviewers(config: PiReviewConfig, filterIds: string[], parentModel: string | undefined): ReviewerSpec[] {
 	return selectReviewers(config, filterIds).map((r) => ({
 		...r,
 		model: resolveModel(r.model, parentModel),
@@ -64,7 +64,7 @@ function resolveReviewers(config: PiReviewConfig, filterIds: string[], parentMod
  * Synthetic reviewer used by `--lite` mode — one agent covering all dimensions,
  * no fan-out, no gate. Its id resolves to the bundled `agents/lite-review.md`.
  */
-function liteReviewer(parentModel: string | undefined): ReviewerSpec {
+export function liteReviewer(parentModel: string | undefined): ReviewerSpec {
 	return {
 		id: "lite-review",
 		label: "Lite Review",

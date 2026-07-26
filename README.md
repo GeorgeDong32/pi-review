@@ -1,13 +1,15 @@
 # pi-review
 
-Pi extension for code review: **N parallel reviewer subagents + a cheap-model gate** by default, or a **single fast agent** with `--lite`. The gate aggregates reviewer output into a final verdict.
+Pi extension for code review that runs **in the foreground**: `/review` hands a directive to the main agent, which fans out parallel reviewers + a cheap-model gate via the `subagent` tool. The whole review streams in chat — no silent background work.
 
-Pattern ported from the Claude code-review plugin: eligibility → prep → parallel content reviewers → gate (confidence filter + verdict) → report. See [reference/](./reference/) for upstream flow notes and the version roadmap.
+Requires the **pi-subagents** extension (`pi install npm:@mariozechner/pi-subagents`) — it provides the `subagent` tool used to fan out.
+
+Pattern ported from the Claude code-review plugin. See [reference/](./reference/) for upstream flow notes and the version roadmap.
 
 ## Commands
 
 ```text
-/review [any prompt] [--lite]
+/review [any prompt] [--lite] [--gate-model <id>]
 /review-config
 /review-agents
 ```
@@ -39,12 +41,13 @@ When called with no arguments, `/review` targets **local git** and tells agents 
 
 ### Flags
 
-The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer` / `--no-gate` / `--gate-model` / `--score-per-issue` / `--diff`) are accepted-but-ignored so old invocations do not break; their capabilities now live in `config.json` via `/review-config`.
+The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer` / `--no-gate` / `--score-per-issue` / `--diff`) are accepted-but-ignored so old invocations do not break; their capabilities now live in `config.json` via `/review-config`.
 
 | Flag | Effect |
 |---|---|
 | `--lite` | Single-agent fast mode: one reviewer, no gate. |
-| `--no-spawn` | Dry run — print the resolved plan (reviewers, model, threshold) and exit. |
+| `--gate-model <id>` | Override the gate model for this run (otherwise `config.gate.model`). |
+| `--no-spawn` | Dry run — print the directive that would be injected, and exit. |
 
 ### Removed flags → config
 
@@ -53,7 +56,6 @@ The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer
 | `--threshold N` | `gate.threshold` |
 | `--reviewer id` | `reviewers.<id>.enabled` |
 | `--no-gate` | `gate.enabled` |
-| `--gate-model id` | `gate.model` |
 | `--score-per-issue MODE` | `gate.scorePerIssue` |
 | `--diff path` | *(removed — pass a PR url or run in a dirty repo instead)* |
 
@@ -70,22 +72,19 @@ The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer
 
 ## Pipeline
 
-```text
-Default mode:
-eligibility → prep (rule paths + metadata summary) → 5 reviewers (parallel, cap 4)
-  → each reviewer obtains the change via gh/git/read
-  → gate LLM (reviewer JSON + metadata; no full diff embed)
-  → optional per-issue scorers (off by default; opt in via config)
-  → code enforce (dedupe + threshold + verdict)
-  → markdown report
+`/review` runs in the foreground: the handler builds a directive and injects it into the main agent via `sendUserMessage`; the main agent then executes it openly using the `subagent` tool (from pi-subagents):
 
-Lite mode (--lite):
-eligibility → prep → 1 lite-reviewer (all dimensions in one pass) → markdown report (no gate)
+```text
+handler:  parse args → load config → resolve target → build directive → sendUserMessage
+main agent (foreground streaming):
+  Step 1  subagent({ tasks: [5 reviewers] })        — each reads agents/<id>.md
+  Step 2  subagent({ task: gate, model: <cheap> })  — reads prompts/gate.md
+  Step 3  markdown report (verdict + findings)
+
+--lite: Step 1 with a single lite-reviewer; skip Step 2.
 ```
 
-Lighter than Claude's code-review plugin (which scores **every** issue with a dedicated Haiku), but keeps the same two-level idea: parallel find → independent confidence filter. The parent always re-applies threshold and verdict rules in code so LLM mistakes cannot approve leftover blockers.
-
-The gate / scorers use `structured_output` via a child capture extension (`src/structured-output-capture.ts`).
+The two-level idea matches Claude's code-review (parallel find → independent confidence filter), but verdict/threshold are now **instructed** to the main agent rather than code-enforced — the LLM follows the rule but it is no longer a hard guarantee. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
 
 ## Configuration
 
@@ -132,11 +131,11 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
 }
 ```
 
-Use `"model": "inherit"` on a reviewer to follow the parent session's model. The gate defaults to a cheap tier; override it in config (`gate.model`). `--gate-model` is accepted but no longer documented — edit config instead.
+Use `"model": "inherit"` on a reviewer to follow the parent session's model. The gate defaults to a cheap tier; override it persistently via `gate.model` in config, or per-run with `--gate-model <id>` (the directive injects it into the gate subagent).
 
 ## TUI output
 
-The full report is rendered as a single markdown block and injected as an `assistant` message:
+The main agent writes the report directly into chat. Shape (illustrative):
 
 ```text
 ## pi-review — uncommitted changes

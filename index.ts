@@ -8,6 +8,11 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-cod
 import { existsSync, readFileSync } from "node:fs";
 
 import { parseReviewArgs } from "./src/cli-args.js";
+import { buildReviewDirective } from "./src/directive.js";
+import { checkEligibility } from "./src/eligibility.js";
+import { resolveReviewTarget } from "./src/git-input.js";
+import { extractPrRef } from "./src/pr-ref.js";
+import { liteReviewer, resolveReviewers } from "./src/run.js";
 import {
 	configPath,
 	DEFAULT_CONFIG,
@@ -17,7 +22,7 @@ import {
 	validateConfig,
 	writeConfig,
 } from "./src/config.js";
-import { runReviewPipeline } from "./src/run.js";
+import type { ReviewTarget } from "./src/types.js";
 
 function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 	const m = ctx.model;
@@ -27,7 +32,7 @@ function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("review", {
-		description: "Code review (parallel reviewers + gate). --lite = fast single-agent. Trailing text = any prompt.",
+		description: "Code review in the foreground (parallel reviewers + gate via main agent). --lite = single-agent. Trailing text = any prompt.",
 		getArgumentCompletions: (prefix: string) => {
 			const trimmed = prefix.trimStart();
 			const tokens = trimmed.split(/\s+/).filter(Boolean);
@@ -36,14 +41,12 @@ export default function (pi: ExtensionAPI) {
 			if (last.startsWith("--")) {
 				return [
 					{ value: "--lite", label: "--lite", description: "Fast single-agent review (no gate)" },
+					{ value: "--gate-model", label: "--gate-model", description: "Override gate model for this run" },
 				].filter((o) => o.value.startsWith(last));
 			}
 			return null;
 		},
 		handler: async (args, ctx) => {
-			const setStatus = (text: string | undefined) => {
-				if (ctx.hasUI) ctx.ui.setStatus("pi-review", text);
-			};
 			const notify = (msg: string, level: "info" | "warning" | "error" = "info") => {
 				if (ctx.hasUI) ctx.ui.notify(msg, level);
 				else console.log(`pi-review: ${msg}`);
@@ -51,52 +54,70 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const parsed = parseReviewArgs(args);
-				setStatus("resolving target…");
+				const { config } = loadConfig();
+				const parentModel = parentModelId(ctx);
+
+				// Resolve what to review (PR url / local-git). Freeform input also
+				// becomes target.userContext, which the directive injects.
+				let target: ReviewTarget | null = null;
+				try {
+					target = await resolveReviewTarget(ctx.cwd, { input: parsed.input });
+				} catch (err) {
+					notify(err instanceof Error ? err.message : String(err), "warning");
+					return;
+				}
+				if (!target) {
+					notify("Not in a git repo and no PR/url given — nothing to review.", "info");
+					return;
+				}
+
+				const eligibility = checkEligibility({
+					target,
+					hasExplicitInput: Boolean(parsed.input && extractPrRef(parsed.input)),
+					isGitRepo: true,
+					probedDiff: null,
+				});
+				if (!eligibility.eligible) {
+					notify(eligibility.reason, "info");
+					return;
+				}
+
+				// Reviewers: config-enabled set, or a single lite reviewer.
+				const reviewers = parsed.lite
+					? [liteReviewer(parentModel)]
+					: resolveReviewers(config, [], parentModel);
+				if (reviewers.length === 0) {
+					notify("No enabled reviewers. Edit config via /review-config.", "warning");
+					return;
+				}
+				const gateModel = resolveModel(parsed.gateModel ?? config.gate.model, parentModel);
+
+				const directive = buildReviewDirective({
+					target,
+					reviewers,
+					gateModel,
+					threshold: config.gate.threshold,
+					lite: parsed.lite,
+				});
+
+				// Dry-run: show the directive instead of injecting it.
+				if (parsed.noSpawn) {
+					pi.sendMessage({ customType: "pi-review", content: directive, display: true });
+					return;
+				}
+
+				// Inject into the main agent — it runs the review in the open
+				// (foreground streaming) via the `subagent` tool from pi-subagents.
 				notify(
-					parsed.input
-						? `pi-review starting: ${parsed.input.slice(0, 80)}${parsed.input.length > 80 ? "…" : ""}`
-						: "pi-review starting (local git)…",
+					parsed.lite
+						? "pi-review --lite: delegating to main agent (single pass, no gate)…"
+						: `pi-review: delegating to main agent (${reviewers.length} reviewers + gate)…`,
 					"info",
 				);
-
-				const result = await runReviewPipeline({
-					args: parsed,
-					ctx,
-					onStatus: setStatus,
-				});
-
-				setStatus(undefined);
-
-				if (result.kind === "skipped") {
-					notify(result.reason, "info");
-					return;
-				}
-
-				if (result.kind === "dry-run") {
-					pi.sendMessage({
-						customType: "pi-review",
-						content: result.plan,
-						display: true,
-					});
-					return;
-				}
-
-				pi.sendMessage({
-					customType: "pi-review",
-					content: result.markdown,
-					display: true,
-					details: result.report,
-				});
-				pi.appendEntry("pi-review", result.report);
+				pi.sendUserMessage(directive);
 			} catch (err) {
-				setStatus(undefined);
 				const message = err instanceof Error ? err.message : String(err);
 				notify(`pi-review failed: ${message}`, "error");
-				pi.sendMessage({
-					customType: "pi-review",
-					content: `## pi-review failed\n\n${message}`,
-					display: true,
-				});
 			}
 		},
 	});

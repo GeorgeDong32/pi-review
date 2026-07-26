@@ -50,4 +50,16 @@ describe("parseReviewArgs", () => {
 		const p = parseReviewArgs("--score-per-issue blocker-major");
 		assert.equal(p.input, undefined);
 	});
+
+	test("parses --gate-model override (no longer a legacy flag)", () => {
+		const p = parseReviewArgs("--gate-model anthropic/claude-sonnet-4-6");
+		assert.equal(p.gateModel, "anthropic/claude-sonnet-4-6");
+		assert.equal(p.input, undefined);
+	});
+
+	test("--gate-model does not swallow the trailing user prompt", () => {
+		const p = parseReviewArgs("--gate-model anthropic/claude-haiku-4-5 focus on auth");
+		assert.equal(p.gateModel, "anthropic/claude-haiku-4-5");
+		assert.equal(p.input, "focus on auth");
+	});
 });

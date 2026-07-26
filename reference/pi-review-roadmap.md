@@ -180,3 +180,4 @@ reference/                      This folder
 | 2026-07-19 | Skip `pr-context` until v0.3+ | Requires `gh`; local-first v1 |
 | 2026-07-19 | Default threshold 8/10 | Maps to Claude 80/100 |
 | 2026-07-26 | CLI collapsed to `--lite` dual-mode; per-issue scorer default off; gate default Haiku | Lighten the CLI surface + align with Claude code-review |
+| 2026-07-26 | Foreground directive mode via `sendUserMessage` (relies on pi-subagents); `--gate-model` restored; spawn path kept as fallback | Review visible in chat; gate model user-configurable |

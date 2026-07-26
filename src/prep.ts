@@ -96,7 +96,7 @@ export function prepareContext(cwd: string, summary?: string): PrepContext {
 	};
 }
 
-function obtainChangePlaybook(target: ReviewTarget): string {
+export function obtainChangePlaybook(target: ReviewTarget): string {
 	const lines: string[] = [
 		"### How to obtain the change",
 		"",
