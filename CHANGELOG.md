@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-07-27
+
+### Changed
+- **Foreground review**: `/review` now delegates to the main agent via a hidden directive (`sendMessage` with `display:false` + `triggerTurn:true`); the main agent fans out reviewers + gate with the pi-subagents `subagent` tool. The whole review streams in chat — no more silent background spawn. **Requires the pi-subagents extension.**
+- **Main agent owns the diff**: the directive has the main agent obtain the diff once into `/tmp/pi-review-change.diff`; reviewers read that file instead of each fetching separately.
+- **Hidden directive, visible echo**: only a short `/review <prompt>` line shows in chat; the full directive is hidden.
+- **Top-level config**: moved to `~/.pi/agent/pi-review.json` (mirrors pi-permission-modes); added `setConfigPath` for tests.
+- **Gate model** defaults to a cheap tier (`anthropic/claude-haiku-4-5`); override via config or the restored `--gate-model` flag.
+- **per-issue scorer** default `off` (was `blocker-major`).
+- **CLI slimmed**: `/review` surface reduced to `--lite` + freeform prompt; removed flags are accepted-but-ignored (their capabilities moved to config).
+
+### Added
+- **`--lite` mode**: single-agent fast review (`agents/lite-review.md`), no fan-out/gate.
+- **Workflow checklist**: the directive has the main agent post a markdown checklist of the steps first, then work through it (pi has no native todo tool).
+- `getArgumentCompletions` for `--lite` / `--gate-model`.
+
+### Removed
+- Code-enforced verdict — now instructed to the main agent (LLM follows the rule, but no longer a hard guarantee). The background spawn path is kept as a fallback.
+
+[0.5.0]: https://github.com/GeorgeDong32/pi-review/compare/v0.4.1...v0.5.0
+
 ## [0.4.1] - 2026-07-26
 
 ### Fixed
