@@ -72,13 +72,6 @@ describe("smoke pipeline", () => {
 	it("dry-run with oversized PR still succeeds (agent-fetch)", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-pr-"));
 		setRunGh(async (args) => {
-			if (args[0] === "pr" && args[1] === "diff") {
-				return {
-					exitCode: 1,
-					stdout: "",
-					stderr: "HTTP 406: exceeded the maximum number of lines (20000)\nPullRequest.diff too_large",
-				};
-			}
 			if (args[0] === "pr" && args[1] === "view") {
 				return {
 					exitCode: 0,
@@ -104,6 +97,7 @@ describe("smoke pipeline", () => {
 		const plan = (result as { plan: string }).plan;
 		assert.match(plan, /PR 17206/);
 		assert.match(plan, /agent-fetch/);
+		assert.match(plan, /path-scoped|too_large|exceeds/i);
 		assert.doesNotMatch(plan, /Could not fetch PR diff/);
 	});
 });

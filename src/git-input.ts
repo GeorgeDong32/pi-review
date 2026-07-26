@@ -202,7 +202,7 @@ export async function resolveDefaultDiff(cwd: string): Promise<ResolvedInput | n
 export async function fetchPrMetadata(
 	cwd: string,
 	prRef: string,
-): Promise<{ summary: string; probeNote?: string } | null> {
+): Promise<{ summary: string; probeNote?: string; additions?: number; changedFiles?: number } | null> {
 	const view = await _runGh(
 		["pr", "view", prRef, "--json", "title,additions,deletions,changedFiles,state"],
 		{ cwd },
@@ -223,8 +223,19 @@ export async function fetchPrMetadata(
 		const add = data.additions ?? "?";
 		const del = data.deletions ?? "?";
 		const state = data.state ?? "?";
+		const additions = typeof data.additions === "number" ? data.additions : undefined;
+		const changedFiles = typeof data.changedFiles === "number" ? data.changedFiles : undefined;
+		// GitHub rejects `gh pr diff` above ~20k lines — warn agents without calling it.
+		const likelyTooLarge =
+			(additions !== undefined && additions >= 15_000) ||
+			(changedFiles !== undefined && changedFiles >= 150);
 		return {
 			summary: `PR ${prRef}: "${title}" [${state}] · ${files} file(s) · +${add}/-${del} (metadata only; agents fetch the change).`,
+			probeNote: likelyTooLarge
+				? "PR likely exceeds gh pr diff limits — reviewers should use git / path-scoped diffs"
+				: undefined,
+			additions,
+			changedFiles,
 		};
 	} catch {
 		return null;
@@ -288,14 +299,12 @@ export async function resolveReviewTarget(
 
 	const prRef = userContext ? extractPrRef(userContext) : null;
 	if (prRef) {
-		const probeNote = await probeGhPrDiff(cwd, prRef);
 		return {
 			kind: "pr",
 			label: prLabel(prRef),
 			userContext,
 			prRef,
-			hint: `Obtain PR ${prRef} yourself via gh and/or git. Prefer path-scoped diffs when oversized.`,
-			probeNote,
+			hint: `Obtain PR ${prRef} yourself via gh and/or git. If \`gh pr diff\` hits too_large / HTTP 406, fall back to git / path-scoped diffs — do not stop.`,
 		};
 	}
 

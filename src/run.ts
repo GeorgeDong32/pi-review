@@ -60,19 +60,23 @@ function resolveReviewers(config: PiReviewConfig, filterIds: string[], parentMod
 	}));
 }
 
-async function buildSummary(cwd: string, target: ReviewTarget): Promise<string> {
+async function buildSummary(cwd: string, target: ReviewTarget): Promise<{ summary: string; probeNote?: string }> {
 	if (target.kind === "pr" && target.prRef) {
 		const meta = await fetchPrMetadata(cwd, target.prRef);
 		if (meta?.summary) {
-			const note = target.probeNote ? ` ${target.probeNote}.` : "";
-			return meta.summary + note;
+			return { summary: meta.summary, probeNote: meta.probeNote ?? target.probeNote };
 		}
-		return `PR ${target.prRef} (agent-fetch).${target.probeNote ? ` ${target.probeNote}.` : ""}`;
+		return {
+			summary: `PR ${target.prRef} (agent-fetch).`,
+			probeNote: target.probeNote,
+		};
 	}
 	if (target.kind === "diff-file" && target.diffPath) {
-		return `Explicit diff file at ${target.diffPath} (agents will read it; not embedded).`;
+		return {
+			summary: `Explicit diff file at ${target.diffPath} (agents will read it; not embedded).`,
+		};
 	}
-	return target.hint ?? "Local git changes — agents will discover via git.";
+	return { summary: target.hint ?? "Local git changes — agents will discover via git." };
 }
 
 export async function runReviewPipeline(options: RunPipelineOptions): Promise<PipelineResult> {
@@ -117,8 +121,9 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	}
 
 	const input = target!;
-	const summary = await buildSummary(cwd, input);
-	const prep = prepareContext(cwd, summary);
+	const { summary, probeNote } = await buildSummary(cwd, input);
+	if (probeNote) input.probeNote = probeNote;
+	const prep = prepareContext(cwd, probeNote ? `${summary} ${probeNote}.` : summary);
 	const prepMeta: PrepMetadata = { rulePaths: prep.rulePaths, summary: prep.summary };
 	const taskBody = formatReviewTask(prep, input);
 	const gateContext = formatGateContext(prep, input);
@@ -150,6 +155,9 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	}
 
 	const startedAt = Date.now();
+	onStatus?.(`starting · ${input.label}`);
+
+	let doneCount = 0;
 	onStatus?.(`reviewers 0/${reviewers.length}`);
 
 	const reviewerResults = await runReviewers({
@@ -157,9 +165,14 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 		promptBody: taskBody,
 		cwd,
 		config,
+		onReviewerDone: (result) => {
+			doneCount += 1;
+			const mark = result.ok ? "ok" : "fail";
+			onStatus?.(`reviewers ${doneCount}/${reviewers.length} · ${result.id} ${mark}`);
+		},
 	});
 
-	onStatus?.(runGateStep ? "gate" : undefined);
+	onStatus?.(runGateStep ? "gate · aggregating" : undefined);
 
 	let gateResult = null;
 	if (runGateStep) {

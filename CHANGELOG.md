@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-07-26
+
+### Fixed
+- **UI feedback during `/review`:** immediate notify + footer status; per-reviewer progress; errors surface via notify + message.
+- Stop calling `gh pr diff` during target resolve (was blocking the TUI with no output while the backend worked). Oversized hint comes from `gh pr view` metadata instead.
+
+[0.4.1]: https://github.com/GeorgeDong32/pi-review/compare/v0.4.0...v0.4.1
+
 ## [0.4.0] - 2026-07-26
 
 ### Changed

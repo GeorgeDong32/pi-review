@@ -11,15 +11,13 @@ describe("resolveReviewTarget", () => {
 		resetRunGh();
 	});
 
-	test("PR URL returns agent-fetch target even when gh pr diff fails", async () => {
+	test("PR URL returns agent-fetch target without calling gh pr diff", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-gh-"));
+		let calledDiff = false;
 		setRunGh(async (args) => {
 			if (args[0] === "pr" && args[1] === "diff") {
-				return {
-					exitCode: 1,
-					stdout: "",
-					stderr: "HTTP 406: exceeded the maximum number of lines (20000)\nPullRequest.diff too_large",
-				};
+				calledDiff = true;
+				return { exitCode: 1, stdout: "", stderr: "should not be called" };
 			}
 			return { exitCode: 0, stdout: "{}", stderr: "" };
 		});
@@ -31,7 +29,7 @@ describe("resolveReviewTarget", () => {
 		assert.equal(target?.kind, "pr");
 		assert.equal(target?.prRef, "https://github.com/org/repo/pull/99");
 		assert.match(target?.label ?? "", /PR 99/);
-		assert.match(target?.probeNote ?? "", /too_large|git/i);
+		assert.equal(calledDiff, false);
 	});
 
 	test("--diff records path without embedding content", async () => {

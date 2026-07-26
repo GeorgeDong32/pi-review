@@ -29,37 +29,63 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("review", {
 		description: "Fan-out code review: parallel reviewers + confidence gate",
 		handler: async (args, ctx) => {
-			const parsed = parseReviewArgs(args);
-			const result = await runReviewPipeline({
-				args: parsed,
-				ctx,
-				onStatus: (text) => {
-					if (ctx.hasUI) ctx.ui.setStatus("pi-review", text);
-				},
-			});
+			const setStatus = (text: string | undefined) => {
+				if (ctx.hasUI) ctx.ui.setStatus("pi-review", text);
+			};
+			const notify = (msg: string, level: "info" | "warning" | "error" = "info") => {
+				if (ctx.hasUI) ctx.ui.notify(msg, level);
+				else console.log(`pi-review: ${msg}`);
+			};
 
-			if (result.kind === "skipped") {
-				if (ctx.hasUI) ctx.ui.notify(result.reason, "info");
-				else console.log(`pi-review: ${result.reason}`);
-				return;
-			}
+			try {
+				const parsed = parseReviewArgs(args);
+				setStatus("resolving target…");
+				notify(
+					parsed.input
+						? `pi-review starting: ${parsed.input.slice(0, 80)}${parsed.input.length > 80 ? "…" : ""}`
+						: "pi-review starting (local git)…",
+					"info",
+				);
 
-			if (result.kind === "dry-run") {
+				const result = await runReviewPipeline({
+					args: parsed,
+					ctx,
+					onStatus: setStatus,
+				});
+
+				setStatus(undefined);
+
+				if (result.kind === "skipped") {
+					notify(result.reason, "info");
+					return;
+				}
+
+				if (result.kind === "dry-run") {
+					pi.sendMessage({
+						customType: "pi-review",
+						content: result.plan,
+						display: true,
+					});
+					return;
+				}
+
 				pi.sendMessage({
 					customType: "pi-review",
-					content: result.plan,
+					content: result.markdown,
+					display: true,
+					details: result.report,
+				});
+				pi.appendEntry("pi-review", result.report);
+			} catch (err) {
+				setStatus(undefined);
+				const message = err instanceof Error ? err.message : String(err);
+				notify(`pi-review failed: ${message}`, "error");
+				pi.sendMessage({
+					customType: "pi-review",
+					content: `## pi-review failed\n\n${message}`,
 					display: true,
 				});
-				return;
 			}
-
-			pi.sendMessage({
-				customType: "pi-review",
-				content: result.markdown,
-				display: true,
-				details: result.report,
-			});
-			pi.appendEntry("pi-review", result.report);
 		},
 	});
 

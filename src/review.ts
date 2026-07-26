@@ -22,10 +22,12 @@ const MAX_TASK_ARG_CHARS = 24_000;
 /** Options for runReviewers. */
 export interface RunReviewersInput {
 	reviewers: ReviewerSpec[];
-	/** Prep + diff task body for reviewers. */
+	/** Prep + obtain-change task body for reviewers. */
 	promptBody: string;
 	cwd: string;
 	config: PiReviewConfig;
+	/** Fired when each reviewer finishes (for UI progress). */
+	onReviewerDone?: (result: ReviewerRunResult) => void;
 }
 
 function materializeSystemPromptFile(reviewer: ReviewerSpec): string {
@@ -92,8 +94,9 @@ export async function runReviewers(input: RunReviewersInput): Promise<ReviewerRu
 			outputPath: runtime.outputPath,
 		});
 
+		let runResult: ReviewerRunResult;
 		if (!result.ok) {
-			return {
+			runResult = {
 				id: reviewer.id,
 				label: reviewer.label,
 				model: resolvedModel,
@@ -101,17 +104,19 @@ export async function runReviewers(input: RunReviewersInput): Promise<ReviewerRu
 				error: result.error,
 				exitCode: result.exitCode ?? undefined,
 				durationMs: result.durationMs,
-			} satisfies ReviewerRunResult;
+			};
+		} else {
+			const output = result.value as ReviewerOutput;
+			runResult = {
+				id: reviewer.id,
+				label: reviewer.label,
+				model: resolvedModel,
+				ok: true,
+				output,
+				durationMs: result.durationMs,
+			};
 		}
-
-		const output = result.value as ReviewerOutput;
-		return {
-			id: reviewer.id,
-			label: reviewer.label,
-			model: resolvedModel,
-			ok: true,
-			output,
-			durationMs: result.durationMs,
-		} satisfies ReviewerRunResult;
+		input.onReviewerDone?.(runResult);
+		return runResult;
 	});
 }
