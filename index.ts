@@ -110,7 +110,7 @@ export default function (pi: ExtensionAPI) {
 				//    otherwise appear in chat, so surface it as a one-liner. This
 				//    does NOT trigger a turn — it just shows `/review <prompt>`.
 				pi.sendMessage({
-					customType: "pi-review-prompt",
+					customType: "pi-review",
 					content: parsed.input ? `/review ${parsed.input}` : "/review",
 					display: true,
 				});

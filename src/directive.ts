@@ -46,6 +46,26 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	);
 	blocks.push("");
 
+	// First, lay out the workflow as a checklist so nothing gets skipped.
+	blocks.push(
+		"First, post the workflow as a markdown checklist into chat, then work through it — flip each `- [ ]` to `- [x]` as you finish it. This keeps the plan visible and prevents skipped steps.",
+	);
+	blocks.push("");
+	const todoSteps = lite
+		? [
+				"Obtain the diff → /tmp/pi-review-change.diff",
+				"Fan out a single lite-reviewer (subagent)",
+				"Write the report into chat",
+			]
+		: [
+				"Obtain the diff → /tmp/pi-review-change.diff",
+				`Fan out ${reviewers.length} reviewers (subagent)`,
+				"Run the gate pass (subagent)",
+				"Write the report into chat",
+			];
+	for (const s of todoSteps) blocks.push(`- [ ] ${s}`);
+	blocks.push("");
+
 	// Step 1 — main agent obtains the diff and writes it to a shared temp file.
 	blocks.push("## Step 1 — Obtain the change (you, the main agent)");
 	blocks.push("");
@@ -110,7 +130,9 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	const reportStep = lite ? 3 : 4;
 	blocks.push(`## Step ${reportStep} — Report`);
 	blocks.push("");
-	blocks.push("Write a single markdown report:");
+	blocks.push("Write the report as a markdown message into chat:");
+	blocks.push("");
+	blocks.push("Report contents:");
 	blocks.push("- **Verdict**: `request_changes` if any blocker OR ≥3 major; `approve` if no blocker and no major; otherwise `comment`.");
 	blocks.push("- Group findings by reviewer (or by dimension in lite mode); format each as `[SEVERITY · category · conf N] file:line — evidence`.");
 	blocks.push(

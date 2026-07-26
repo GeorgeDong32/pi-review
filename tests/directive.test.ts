@@ -44,6 +44,11 @@ describe("buildReviewDirective", () => {
 		assert.match(d, /Step 3 — Gate/);
 		assert.match(d, /model: "anthropic\/claude-haiku-4-5"/);
 		assert.match(d, /confidence < 8/);
+		// Workflow checklist (todo-ize the flow before executing).
+		assert.match(d, /- \[ \] Obtain the diff/);
+		assert.match(d, /- \[ \] Fan out 5 reviewers/);
+		assert.match(d, /- \[ \] Run the gate pass/);
+		assert.match(d, /- \[ \] Write the report/);
 		// Step 4 — report.
 		assert.match(d, /Step 4 — Report/);
 	});
@@ -59,6 +64,7 @@ describe("buildReviewDirective", () => {
 		assert.match(d, /Step 1 — Obtain the change/);
 		assert.match(d, /concurrency: 1/);
 		assert.match(d, /agents\/lite-review\.md/);
+		assert.match(d, /- \[ \] Fan out a single lite-reviewer/);
 		assert.doesNotMatch(d, /Step 3 — Gate/);
 		assert.match(d, /Step 3 — Report/);
 		assert.match(d, /Lite mode skips the gate/);

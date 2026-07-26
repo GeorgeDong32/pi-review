@@ -81,12 +81,12 @@ main agent (foreground streaming):
   Step 1  obtain diff → /tmp/pi-review-change.diff
   Step 2  subagent({ tasks: [5 reviewers] })        — each reads the diff + agents/<id>.md
   Step 3  subagent({ task: gate, model: <cheap> })  — reads prompts/gate.md
-  Step 4  markdown report (verdict + findings)
+  Step 4  markdown report (verdict + findings) → chat
 
 --lite: Step 2 with a single lite-reviewer; skip Step 3.
 ```
 
-The two-level idea matches Claude's code-review (parallel find → independent confidence filter), but verdict/threshold are now **instructed** to the main agent rather than code-enforced — the LLM follows the rule but it is no longer a hard guarantee. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
+The two-level idea matches Claude's code-review (parallel find → independent confidence filter), but verdict/threshold are now **instructed** to the main agent rather than code-enforced — the LLM follows the rule but it is no longer a hard guarantee. The main agent starts by posting a markdown checklist of the steps, then works through them. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
 
 ## Configuration
 
