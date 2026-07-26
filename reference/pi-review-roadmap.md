@@ -179,3 +179,4 @@ reference/                      This folder
 | 2026-07-19 | Gate compresses Phase 4+5 for v0.2 | Cost vs fidelity; document in reference |
 | 2026-07-19 | Skip `pr-context` until v0.3+ | Requires `gh`; local-first v1 |
 | 2026-07-19 | Default threshold 8/10 | Maps to Claude 80/100 |
+| 2026-07-26 | CLI collapsed to `--lite` dual-mode; per-issue scorer default off; gate default Haiku | Lighten the CLI surface + align with Claude code-review |

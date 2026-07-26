@@ -4,39 +4,50 @@ import { describe, test } from "node:test";
 import { parseReviewArgs } from "../src/cli-args.js";
 
 describe("parseReviewArgs", () => {
-	test("parses flags and freeform input (CC-style)", () => {
-		const p = parseReviewArgs(
-			"--threshold 7 --reviewer bugbot --no-gate https://github.com/org/repo/pull/42",
-		);
-		assert.equal(p.threshold, 7);
-		assert.deepEqual(p.reviewers, ["bugbot"]);
-		assert.equal(p.noGate, true);
-		assert.equal(p.input, "https://github.com/org/repo/pull/42");
-		assert.equal(p.diffPath, undefined);
-	});
-
-	test("parses --diff for explicit diff files", () => {
-		const p = parseReviewArgs("--diff @./changes.patch");
-		assert.equal(p.diffPath, "@./changes.patch");
+	test("parses --lite flag", () => {
+		const p = parseReviewArgs("--lite");
+		assert.equal(p.lite, true);
+		assert.equal(p.noSpawn, false);
 		assert.equal(p.input, undefined);
 	});
 
-	test("joins remaining tokens into input", () => {
-		const p = parseReviewArgs("review PR 17206 for backup changes");
-		assert.equal(p.input, "review PR 17206 for backup changes");
+	test("parses --no-spawn flag", () => {
+		const p = parseReviewArgs("--no-spawn");
+		assert.equal(p.noSpawn, true);
+		assert.equal(p.lite, false);
 	});
 
-	test("clamps --threshold to 0–10", () => {
-		assert.equal(parseReviewArgs("--threshold 99").threshold, 10);
-		assert.equal(parseReviewArgs("--threshold -3").threshold, 0);
+	test("joins freeform trailing text into input (any prompt)", () => {
+		const p = parseReviewArgs("review PR 17206 for backup edge cases");
+		assert.equal(p.input, "review PR 17206 for backup edge cases");
+		assert.equal(p.lite, false);
 	});
 
-	test("parses --score-per-issue", () => {
-		assert.equal(parseReviewArgs("--score-per-issue off").scorePerIssue, "off");
-		assert.equal(
-			parseReviewArgs("--score-per-issue blocker-major").scorePerIssue,
-			"blocker-major",
-		);
-		assert.equal(parseReviewArgs("--score-per-issue all").scorePerIssue, "all");
+	test("keeps a PR url as input", () => {
+		const p = parseReviewArgs("https://github.com/org/repo/pull/42");
+		assert.equal(p.input, "https://github.com/org/repo/pull/42");
+	});
+
+	test("combines --lite with a focus prompt", () => {
+		const p = parseReviewArgs("--lite focus on concurrency and security");
+		assert.equal(p.lite, true);
+		assert.equal(p.input, "focus on concurrency and security");
+	});
+
+	test("silently drops removed valued flags and their values (graceful degradation)", () => {
+		// Old invocations must not leak flag values into input.
+		const p = parseReviewArgs("--threshold 7 --reviewer bugbot --no-gate focus on bugs");
+		assert.equal(p.input, "focus on bugs");
+		assert.equal(p.lite, false);
+	});
+
+	test("drops removed --diff and its value", () => {
+		const p = parseReviewArgs("--diff @./changes.patch");
+		assert.equal(p.input, undefined);
+	});
+
+	test("drops removed --score-per-issue and its value", () => {
+		const p = parseReviewArgs("--score-per-issue blocker-major");
+		assert.equal(p.input, undefined);
 	});
 });

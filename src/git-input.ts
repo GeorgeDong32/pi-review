@@ -5,16 +5,13 @@
  * It does **not** require a successful `gh pr diff` — oversized PRs are left
  * for reviewer agents to fetch via git.
  */
-import { existsSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { extractPrRef } from "./pr-ref.js";
 import type { ResolvedInput, ReviewTarget } from "./types.js";
 
 export interface ResolveReviewTargetOptions {
-	/** CC-style freeform user context (not a filesystem path). */
+	/** CC-style freeform user context (PR url, review focus, instructions). */
 	input?: string;
-	/** Explicit diff file via `--diff`. */
-	diffPath?: string;
 }
 
 /** Minimal git invocation. Tests inject a fake. */
@@ -255,11 +252,6 @@ export async function probeGhPrDiff(cwd: string, prRef: string): Promise<string 
 	return undefined;
 }
 
-function resolveDiffFilePath(cwd: string, pathArg: string): string {
-	const raw = pathArg.startsWith("@") ? pathArg.slice(1) : pathArg;
-	return isAbsolute(raw) ? raw : join(cwd, raw);
-}
-
 function summarizeUserContext(text: string): string {
 	const oneLine = text.replace(/\s+/g, " ").trim();
 	return oneLine.length > 72 ? `${oneLine.slice(0, 69)}...` : oneLine;
@@ -281,21 +273,6 @@ export async function resolveReviewTarget(
 	opts: ResolveReviewTargetOptions,
 ): Promise<ReviewTarget | null> {
 	const userContext = opts.input?.trim() || undefined;
-
-	if (opts.diffPath) {
-		const abs = resolveDiffFilePath(cwd, opts.diffPath);
-		if (!existsSync(abs)) {
-			throw new Error(`Diff file not found: ${abs}`);
-		}
-		const name = abs.split("/").pop() ?? abs;
-		return {
-			kind: "diff-file",
-			label: userContext ? `${name} · ${summarizeUserContext(userContext)}` : `${name} (agent-fetch)`,
-			userContext,
-			diffPath: abs,
-			hint: `Read the diff file at ${abs} (do not assume it was embedded in this prompt).`,
-		};
-	}
 
 	const prRef = userContext ? extractPrRef(userContext) : null;
 	if (prRef) {

@@ -99,7 +99,7 @@ export async function runGate(input: RunGateInput): Promise<GateRunResult> {
 	const promptBody = renderGatePrompt(input);
 	const taskText = materializeTaskArg(promptBody);
 	const scoreMode =
-		input.scorePerIssue ?? input.config.gate.scorePerIssue ?? "blocker-major";
+		input.scorePerIssue ?? input.config.gate.scorePerIssue ?? "off";
 
 	const args: BuiltArgs = buildGateArgs({
 		model: input.gateModel,

@@ -12,18 +12,27 @@ import { dirname, join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import type { PiReviewConfig, ReviewerSpec, ScorePerIssueMode } from "./types.js";
 
+/**
+ * Cheap model used by default for the gate (dedupe + re-score + verdict).
+ * The gate is pure de-noise reasoning, so it defaults to a cheap tier;
+ * reviewers stay on "inherit" to follow the parent session's stronger model.
+ * Override via config.json (`gate.model`) or `--gate-model`.
+ */
+export const DEFAULT_GATE_MODEL = "anthropic/claude-haiku-4-5";
+
 /** Default reviewer and gate config shipped with the package. */
 export const DEFAULT_CONFIG: PiReviewConfig = {
 	schemaVersion: 1,
 	gate: {
-		// "inherit" → resolves to parent session model at run time. Lets the
-		// extension follow whatever model the user picked without forcing them
-		// to edit config.json to match.
-		model: "inherit",
+		// Cheap tier by default — the gate only dedupes + re-scores + verdicts,
+		// so cost matters more than raw strength. Reviewers stay on "inherit".
+		model: DEFAULT_GATE_MODEL,
 		thinking: "low",
 		enabled: true,
 		threshold: 8,
-		scorePerIssue: "blocker-major",
+		// Off by default — the gate's single re-score pass is enough (roadmap
+		// principle #5: "one cheap spawn"). Opt in via config for deep mode.
+		scorePerIssue: "off",
 	},
 	concurrency: 4,
 	reviewers: {
@@ -287,7 +296,7 @@ export function resolveModel(value: string | "inherit", parentModelId: string | 
 	if (value === "inherit") {
 		return parentModelId && parentModelId.length > 0
 			? parentModelId
-			: "anthropic/claude-sonnet-4-6";
+			: DEFAULT_GATE_MODEL;
 	}
 	return value;
 }

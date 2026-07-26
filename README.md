@@ -1,13 +1,13 @@
 # pi-review
 
-Pi extension for fan-out code review: **N parallel reviewer subagents + a cheap-model gate** that aggregates their structured output into a final verdict.
+Pi extension for code review: **N parallel reviewer subagents + a cheap-model gate** by default, or a **single fast agent** with `--lite`. The gate aggregates reviewer output into a final verdict.
 
 Pattern ported from the Claude code-review plugin: eligibility → prep → parallel content reviewers → gate (confidence filter + verdict) → report. See [reference/](./reference/) for upstream flow notes and the version roadmap.
 
 ## Commands
 
 ```text
-/review [user context ...] [--diff path | @file] [--threshold N] [--reviewer id ...] [--no-gate] [--gate-model id] [--score-per-issue off|blocker-major|all] [--no-spawn]
+/review [any prompt] [--lite]
 /review-config
 /review-agents
 ```
@@ -30,24 +30,32 @@ When called with no arguments, `/review` targets **local git** and tells agents 
 /review focus on backup restore — PR 17206
 ```
 
-**Explicit diff file:** use `--diff` (path is passed to agents to `read`; not embedded):
+**Lite mode:** add `--lite` for a fast single-agent pass — one reviewer covers all dimensions (bugs / security / compliance / code-comments / history), no fan-out, no gate. Lower latency and cost; ideal for a quick gut-check.
 
 ```text
-/review --diff @./changes.patch
-/review focus on auth --diff /tmp/pr.diff
+/review --lite
+/review --lite focus on concurrency and secret handling
 ```
 
-Flags:
+### Flags
+
+The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer` / `--no-gate` / `--gate-model` / `--score-per-issue` / `--diff`) are accepted-but-ignored so old invocations do not break; their capabilities now live in `config.json` via `/review-config`.
 
 | Flag | Effect |
 |---|---|
-| `--threshold N` | Override the confidence floor (0-10, clamped). Issues with `confidence < N` are dropped by code-side gate enforce. Default **8**. |
-| `--reviewer id` | Restrict the run to a specific reviewer. Repeatable. |
-| `--no-gate` | Skip the gate step. Useful for fast iteration when you only want raw reviewer output. |
-| `--gate-model id` | Override the gate's model for this run. |
-| `--score-per-issue MODE` | `off` / `blocker-major` (default) / `all` — Claude-style parallel per-issue scorers after the gate LLM. |
-| `--no-spawn` | Dry run — print the resolved reviewer list, gate model, threshold, and exit. |
-| `--diff path` | Point reviewers at an explicit diff file (`@./file.diff` supported). Path only — agents `read` it. |
+| `--lite` | Single-agent fast mode: one reviewer, no gate. |
+| `--no-spawn` | Dry run — print the resolved plan (reviewers, model, threshold) and exit. |
+
+### Removed flags → config
+
+| Old flag | config.json key |
+|---|---|
+| `--threshold N` | `gate.threshold` |
+| `--reviewer id` | `reviewers.<id>.enabled` |
+| `--no-gate` | `gate.enabled` |
+| `--gate-model id` | `gate.model` |
+| `--score-per-issue MODE` | `gate.scorePerIssue` |
+| `--diff path` | *(removed — pass a PR url or run in a dirty repo instead)* |
 
 ## Bundled reviewers (v0.4)
 
@@ -63,12 +71,16 @@ Flags:
 ## Pipeline
 
 ```text
+Default mode:
 eligibility → prep (rule paths + metadata summary) → 5 reviewers (parallel, cap 4)
   → each reviewer obtains the change via gh/git/read
   → gate LLM (reviewer JSON + metadata; no full diff embed)
-  → optional per-issue scorers (blocker/major by default)
+  → optional per-issue scorers (off by default; opt in via config)
   → code enforce (dedupe + threshold + verdict)
   → markdown report
+
+Lite mode (--lite):
+eligibility → prep → 1 lite-reviewer (all dimensions in one pass) → markdown report (no gate)
 ```
 
 Lighter than Claude's code-review plugin (which scores **every** issue with a dedicated Haiku), but keeps the same two-level idea: parallel find → independent confidence filter. The parent always re-applies threshold and verdict rules in code so LLM mistakes cannot approve leftover blockers.
@@ -89,14 +101,15 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
 {
   "schemaVersion": 1,
   "gate": {
-    // "inherit" = use the parent session's model. Override to a specific id.
-    "model": "inherit",
+    // Cheap tier by default (pure de-noise reasoning). "inherit" follows the parent session.
+    // Override to a specific id; non-anthropic providers must set this explicitly.
+    "model": "anthropic/claude-haiku-4-5",
     "thinking": "low",
     "enabled": true,
     // Issues with confidence < threshold are dropped (code-enforced).
     "threshold": 8,
-    // Parallel per-issue scorers: "off" | "blocker-major" | "all"
-    "scorePerIssue": "blocker-major"
+    // Per-issue scorers: "off" (default) | "blocker-major" | "all"
+    "scorePerIssue": "off"
   },
   "concurrency": 4,            // hard cap = 4
   "reviewers": {
@@ -119,7 +132,7 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
 }
 ```
 
-Use `"model": "inherit"` on a reviewer (or the gate) to follow whatever model the parent session is using. Override per-run with `--gate-model` or by editing the config.
+Use `"model": "inherit"` on a reviewer to follow the parent session's model. The gate defaults to a cheap tier; override it in config (`gate.model`). `--gate-model` is accepted but no longer documented — edit config instead.
 
 ## TUI output
 
@@ -189,7 +202,7 @@ src/review.ts             runReviewers — fan-out + per-reviewer spawn
 src/gate.ts               runGate — single spawn with aggregated prompt
 src/git-input.ts          resolveDefaultDiff (status / vs default branch)
 src/report.ts             buildReport + renderReport
-agents/*.md               Bundled reviewer prompts
+agents/*.md               Bundled reviewer prompts (incl. lite-review.md for --lite)
 prompts/gate.md           Gate subagent prompt
 tests/*.test.ts           node:test suites
 ```

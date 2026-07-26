@@ -27,7 +27,7 @@ describe("smoke pipeline", () => {
 		resetRunGh();
 	});
 
-	it("dry-run outside git without PR/--diff skips", async () => {
+	it("dry-run outside git without PR skips", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-"));
 		writeFileSync(join(dir, "sample.ts"), "export const x = 1;\n");
 
@@ -38,35 +38,34 @@ describe("smoke pipeline", () => {
 		assert.match((result as { reason: string }).reason, /git|diff|PR|review/i);
 	});
 
-	it("dry-run with explicit diff file uses agent-fetch mode", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-"));
-		const diff = [
-			"diff --git a/foo.ts b/foo.ts",
-			"--- a/foo.ts",
-			"+++ b/foo.ts",
-			"@@ -1,3 +1,3 @@",
-			"-const a = 1",
-			"-const b = 2",
-			"+const a = 2",
-			"+const b = 3",
-			"",
-		].join("\n");
-		const diffPath = join(dir, "change.diff");
-		writeFileSync(diffPath, diff);
+	it("dry-run --lite uses single-agent mode with no gate", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-lite-"));
+		setRunGh(async (args) => {
+			if (args[0] === "pr" && args[1] === "view") {
+				return {
+					exitCode: 0,
+					stdout: JSON.stringify({
+						title: "lite pr",
+						additions: 10,
+						deletions: 2,
+						changedFiles: 1,
+						state: "OPEN",
+					}),
+					stderr: "",
+				};
+			}
+			return { exitCode: 1, stdout: "", stderr: "no" };
+		});
 
-		const args = parseReviewArgs(`--no-spawn --diff @${diffPath}`);
+		const args = parseReviewArgs("--lite https://github.com/org/repo/pull/5 --no-spawn");
 		const result = await runReviewPipeline({ args, ctx: mockCtx(dir) });
 
 		assert.equal(result.kind, "dry-run");
 		const plan = (result as { plan: string }).plan;
-		assert.match(plan, /threshold: 8/);
-		assert.match(plan, /scorePerIssue: blocker-major/);
-		assert.match(plan, /agent-fetch/);
-		assert.match(plan, /bugbot/);
-		assert.match(plan, /security-review/);
-		assert.match(plan, /history-context/);
-		assert.match(plan, /code-comments/);
-		assert.match(plan, /claude-md-compliance/);
+		assert.match(plan, /mode: lite/);
+		assert.match(plan, /gate: no/);
+		assert.match(plan, /reviewers \(1\)/);
+		assert.match(plan, /lite-review/);
 	});
 
 	it("dry-run with oversized PR still succeeds (agent-fetch)", async () => {
@@ -99,5 +98,8 @@ describe("smoke pipeline", () => {
 		assert.match(plan, /agent-fetch/);
 		assert.match(plan, /path-scoped|too_large|exceeds/i);
 		assert.doesNotMatch(plan, /Could not fetch PR diff/);
+		// Lightweight defaults: per-issue scorer off, gate on a cheap model.
+		assert.match(plan, /scorePerIssue: off/);
+		assert.match(plan, /gate: yes \(anthropic\/claude-haiku-4-5\)/);
 	});
 });

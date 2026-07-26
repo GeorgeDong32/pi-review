@@ -60,6 +60,21 @@ function resolveReviewers(config: PiReviewConfig, filterIds: string[], parentMod
 	}));
 }
 
+/**
+ * Synthetic reviewer used by `--lite` mode — one agent covering all dimensions,
+ * no fan-out, no gate. Its id resolves to the bundled `agents/lite-review.md`.
+ */
+function liteReviewer(parentModel: string | undefined): ReviewerSpec {
+	return {
+		id: "lite-review",
+		label: "Lite Review",
+		enabled: true,
+		model: resolveModel("inherit", parentModel),
+		thinking: "medium",
+		tools: ["read", "grep", "find", "ls", "bash"],
+	};
+}
+
 async function buildSummary(cwd: string, target: ReviewTarget): Promise<{ summary: string; probeNote?: string }> {
 	if (target.kind === "pr" && target.prRef) {
 		const meta = await fetchPrMetadata(cwd, target.prRef);
@@ -94,14 +109,13 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	try {
 		target = await resolveReviewTarget(cwd, {
 			input: args.input,
-			diffPath: args.diffPath,
 		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { kind: "skipped", reason: message };
 	}
 
-	const hasExplicitInput = Boolean(args.diffPath || (args.input && extractPrRef(args.input)));
+	const hasExplicitInput = Boolean(args.input && extractPrRef(args.input));
 
 	// Cheap trivial probe only for local-git without explicit PR/--diff.
 	let probedDiff: string | null = null;
@@ -128,17 +142,19 @@ export async function runReviewPipeline(options: RunPipelineOptions): Promise<Pi
 	const taskBody = formatReviewTask(prep, input);
 	const gateContext = formatGateContext(prep, input);
 
-	const threshold = clampThreshold(args.threshold ?? config.gate.threshold);
-	const reviewers = resolveReviewers(config, args.reviewers, parentModel);
-	const gateModel = resolveModel(args.gateModel ?? config.gate.model, parentModel);
-	const runGateStep = !args.noGate && config.gate.enabled;
-	const scorePerIssue = args.scorePerIssue ?? config.gate.scorePerIssue;
+	const threshold = clampThreshold(config.gate.threshold);
+	const reviewers = args.lite
+		? [liteReviewer(parentModel)]
+		: resolveReviewers(config, [], parentModel);
+	const gateModel = resolveModel(config.gate.model, parentModel);
+	const runGateStep = !args.lite && config.gate.enabled;
+	const scorePerIssue = config.gate.scorePerIssue;
 
 	if (args.noSpawn) {
 		const lines = [
 			"pi-review dry run",
 			`input: ${input.label}`,
-			`mode: agent-fetch (${input.kind})`,
+			`mode: ${args.lite ? "lite (single agent, no gate)" : `agent-fetch (${input.kind})`}`,
 			`threshold: ${threshold}`,
 			`scorePerIssue: ${scorePerIssue}`,
 			`reviewers (${reviewers.length}): ${reviewers.map((r) => `${r.id} (${r.model})`).join(", ")}`,

@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 
 import {
 	DEFAULT_CONFIG,
+	DEFAULT_GATE_MODEL,
 	MAX_PARALLEL_CONCURRENCY,
 	clampThreshold,
 	configPath,
@@ -40,7 +41,7 @@ describe("mergeWithDefaults", () => {
 	test("returns DEFAULT_CONFIG when raw is empty", () => {
 		const merged = mergeWithDefaults({});
 		assert.equal(merged.schemaVersion, 1);
-		assert.equal(merged.gate.model, "inherit");
+		assert.equal(merged.gate.model, DEFAULT_GATE_MODEL);
 		assert.equal(merged.gate.threshold, 8);
 		assert.equal(merged.concurrency, 4);
 		assert.equal(Object.keys(merged.reviewers).length, 6);
@@ -61,7 +62,7 @@ describe("mergeWithDefaults", () => {
 		assert.equal(merged.gate.thinking, "high");
 		assert.equal(merged.gate.enabled, false);
 		assert.equal(merged.gate.threshold, 7);
-		assert.equal(merged.gate.scorePerIssue, "blocker-major");
+		assert.equal(merged.gate.scorePerIssue, "off");
 	});
 
 	test("merges gate.scorePerIssue", () => {
@@ -179,8 +180,8 @@ describe("resolveModel", () => {
 	});
 
 	test("falls back when inherit and no parent model", () => {
-		assert.equal(resolveModel("inherit", undefined), "anthropic/claude-sonnet-4-6");
-		assert.equal(resolveModel("inherit", ""), "anthropic/claude-sonnet-4-6");
+		assert.equal(resolveModel("inherit", undefined), DEFAULT_GATE_MODEL);
+		assert.equal(resolveModel("inherit", ""), DEFAULT_GATE_MODEL);
 	});
 
 	test("returns explicit value untouched", () => {
@@ -196,7 +197,7 @@ describe("loadRawConfig / loadConfig / writeConfig", () => {
 	test("loadConfig returns merged defaults when file missing", () => {
 		const { config, errors } = loadConfig();
 		assert.deepEqual(errors, []);
-		assert.equal(config.gate.model, "inherit");
+		assert.equal(config.gate.model, DEFAULT_GATE_MODEL);
 	});
 
 	test("writeConfig round-trips through loadConfig", () => {
@@ -216,7 +217,7 @@ describe("loadRawConfig / loadConfig / writeConfig", () => {
 		writeFileSync(configPath(), "{not json", "utf-8");
 		const { config, errors } = loadConfig();
 		assert.deepEqual(errors, []); // corrupt file = treat as empty, no errors
-		assert.equal(config.gate.model, "inherit");
+		assert.equal(config.gate.model, DEFAULT_GATE_MODEL);
 	});
 
 	test("loadConfig reports validation errors when override is structurally bad", () => {

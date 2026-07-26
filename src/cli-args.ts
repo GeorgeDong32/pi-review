@@ -1,72 +1,59 @@
 /**
- * Parse `/review` command arguments (flags + freeform user input).
+ * Parse `/review` command arguments.
  *
- * CC alignment: text after flags is **user context** for the review (PR URL,
- * PR number, natural language) — not a filesystem path. Use `--diff` for an
- * explicit diff file.
+ * Surface is intentionally minimal:
+ *   - `--lite`      fast single-agent review (no fan-out, no gate)
+ *   - `--no-spawn`  hidden dry-run (prints the resolved plan, no subprocess)
+ *   - trailing freeform text → user review request (focus / requirements /
+ *     PR url / context), injected into reviewers and gate via target.userContext
+ *     (see src/prep.ts and src/git-input.ts)
+ *
+ * Removed flags (--threshold / --reviewer / --gate-model / --score-per-issue /
+ * --diff) are accepted-but-ignored for graceful degradation of old
+ * invocations: a valued legacy flag also consumes its next token so its value
+ * does not leak into `input`. Those capabilities now live in config.json
+ * (`/review-config`).
  */
 
-import { clampThreshold, parseScorePerIssueMode } from "./config.js";
-import type { ScorePerIssueMode } from "./types.js";
-
 export interface ParsedReviewArgs {
-	/** Freeform user context (CC-style), e.g. PR URL or instructions. */
+	/** Freeform user request: review focus, PR url, or context. */
 	input?: string;
-	/** Explicit diff file via `--diff path` or `--diff @file`. */
-	diffPath?: string;
-	threshold?: number;
-	reviewers: string[];
-	noGate: boolean;
-	gateModel?: string;
+	/** Dry-run: print resolved plan without spawning. */
 	noSpawn: boolean;
-	scorePerIssue?: ScorePerIssueMode;
+	/** Single-agent fast mode: one reviewer, no gate. */
+	lite: boolean;
 }
+
+/** Removed valued flags — silently skip flag + value to keep input clean. */
+const LEGACY_VALUED_FLAGS = new Set([
+	"--threshold",
+	"--reviewer",
+	"--gate-model",
+	"--score-per-issue",
+	"--diff",
+]);
 
 export function parseReviewArgs(raw: string): ParsedReviewArgs {
 	const tokens = tokenize(raw);
-	const result: ParsedReviewArgs = {
-		reviewers: [],
-		noGate: false,
-		noSpawn: false,
-	};
+	const result: ParsedReviewArgs = { noSpawn: false, lite: false };
 	const inputParts: string[] = [];
 
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i];
-		if (t === "--threshold") {
-			const n = Number(tokens[++i]);
-			if (Number.isFinite(n)) result.threshold = clampThreshold(n);
-			continue;
-		}
-		if (t === "--reviewer") {
-			const id = tokens[++i];
-			if (id) result.reviewers.push(id);
-			continue;
-		}
-		if (t === "--no-gate") {
-			result.noGate = true;
-			continue;
-		}
-		if (t === "--gate-model") {
-			result.gateModel = tokens[++i];
-			continue;
-		}
-		if (t === "--score-per-issue") {
-			const mode = parseScorePerIssueMode(tokens[++i] ?? "");
-			if (mode) result.scorePerIssue = mode;
+		if (LEGACY_VALUED_FLAGS.has(t)) {
+			i++; // consume the value too
 			continue;
 		}
 		if (t === "--no-spawn") {
 			result.noSpawn = true;
 			continue;
 		}
-		if (t === "--diff") {
-			const path = tokens[++i];
-			if (path) result.diffPath = path;
+		if (t === "--lite") {
+			result.lite = true;
 			continue;
 		}
 		if (t.startsWith("-")) {
-			continue;
+			continue; // ignore other legacy / unknown flags
 		}
 		inputParts.push(t);
 	}

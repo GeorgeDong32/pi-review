@@ -27,7 +27,19 @@ function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("review", {
-		description: "Fan-out code review: parallel reviewers + confidence gate",
+		description: "Code review (parallel reviewers + gate). --lite = fast single-agent. Trailing text = any prompt.",
+		getArgumentCompletions: (prefix: string) => {
+			const trimmed = prefix.trimStart();
+			const tokens = trimmed.split(/\s+/).filter(Boolean);
+			const last = tokens[tokens.length - 1] ?? "";
+			// Suggest flags only while typing a token that starts with "--".
+			if (last.startsWith("--")) {
+				return [
+					{ value: "--lite", label: "--lite", description: "Fast single-agent review (no gate)" },
+				].filter((o) => o.value.startsWith(last));
+			}
+			return null;
+		},
 		handler: async (args, ctx) => {
 			const setStatus = (text: string | undefined) => {
 				if (ctx.hasUI) ctx.ui.setStatus("pi-review", text);
