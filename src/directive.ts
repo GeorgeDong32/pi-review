@@ -1,21 +1,19 @@
 /**
- * Build the review directive injected into the main agent via sendUserMessage.
+ * Build the review directive injected into the main agent (hidden, via
+ * `sendMessage` with `display:false` + `triggerTurn:true` — see index.ts).
  *
- * The main agent executes it in its streaming loop (foreground), using the
- * `subagent` tool (from pi-subagents) to fan out reviewers + gate. This
- * replaces the old background child_process.spawn path (src/spawn.ts), so the
- * whole review is visible in chat instead of hiding behind a footer status.
- *
- * Reviewer/gate prompt bodies are NOT inlined — each subagent task references
- * the bundled prompt file by absolute path, which the child agent reads. The
- * obtain-change playbook IS inlined per reviewer, because child agents are
- * fresh processes that cannot see this directive's Target section.
+ * v2 flow: the MAIN AGENT obtains the diff once and writes it to a temp file
+ * (Step 1), then fans out reviewers that all read that same file (Step 2) —
+ * avoiding N redundant gh/git fetches and keeping the obtain step visible in
+ * chat. Gate (Step 3) and report (Step 4) follow.
  *
  * Requires: pi-subagents extension (provides the `subagent` tool).
  */
-import { obtainChangePlaybook } from "./prep.js";
 import { resolveAgentPromptPath, resolveGatePromptPath } from "./paths.js";
 import type { ReviewerSpec, ReviewTarget } from "./types.js";
+
+/** Shared diff file the main agent writes and every reviewer reads. */
+const DIFF_FILE = "/tmp/pi-review-change.diff";
 
 export interface ReviewDirectiveInput {
 	target: ReviewTarget;
@@ -35,7 +33,6 @@ export interface ReviewDirectiveInput {
  */
 export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	const { target, reviewers, gateModel, threshold, lite } = input;
-	const playbook = obtainChangePlaybook(target);
 	const blocks: string[] = [];
 
 	blocks.push("# Code review");
@@ -45,15 +42,36 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		blocks.push("");
 	}
 	blocks.push(
-		`Review the change below (${target.label}). Use the \`subagent\` tool to fan out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"} in parallel${lite ? " (lite mode)" : ""}, ${lite ? "then write the report" : "then run a gate pass, then write the report"}. Run every step in the open.`,
+		`Review the change (${target.label}). You obtain the diff once, then fan out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite mode)" : ""}, ${lite ? "then write the report" : "then run a gate pass, then write the report"}. Run every step in the open.`,
 	);
 	blocks.push("");
 
-	// Step 1 — fan out reviewers. Each task is self-contained: playbook + prompt path.
-	blocks.push("## Step 1 — Fan out reviewers");
+	// Step 1 — main agent obtains the diff and writes it to a shared temp file.
+	blocks.push("## Step 1 — Obtain the change (you, the main agent)");
+	blocks.push("");
+	blocks.push(`Save the full diff to \`${DIFF_FILE}\`:`);
+	blocks.push("");
+	if (target.kind === "pr" && target.prRef) {
+		blocks.push(`- \`gh pr diff ${target.prRef} > ${DIFF_FILE}\``);
+		blocks.push(
+			`- If that fails (too_large / HTTP 406), fall back to git: fetch the PR head, then \`git diff <default-branch>...<pr-head> > ${DIFF_FILE}\`.`,
+		);
+	} else {
+		blocks.push(
+			`- Dirty tree: \`git diff HEAD > ${DIFF_FILE}\` (add untracked files if relevant).`,
+		);
+		blocks.push(
+			`- Clean tree: \`git diff <default-branch>...HEAD > ${DIFF_FILE}\` (detect the default branch via \`git symbolic-ref refs/remotes/origin/HEAD\`).`,
+		);
+	}
+	blocks.push(`- Verify \`${DIFF_FILE}\` is non-empty before continuing.`);
+	blocks.push("");
+
+	// Step 2 — fan out reviewers, each reading the shared diff + its prompt.
+	blocks.push("## Step 2 — Fan out reviewers");
 	blocks.push("");
 	blocks.push(
-		"Call the `subagent` tool ONCE with all reviewers as parallel tasks. Each task below already embeds the change-obtaining steps and the reviewer's prompt path — pass them verbatim:",
+		"Call the `subagent` tool ONCE with all reviewers as parallel tasks. Each reads the diff you just saved plus its own prompt file:",
 	);
 	blocks.push("");
 	blocks.push("```js");
@@ -61,7 +79,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push("  tasks: [");
 	for (const r of reviewers) {
 		const promptPath = resolveAgentPromptPath(r.id);
-		const task = `${playbook}\n\nThen read ${promptPath} and follow its instructions exactly to review the change.`;
+		const task = `Read ${DIFF_FILE} as the change to review. Then read ${promptPath} and follow its instructions exactly.`;
 		blocks.push(`    { output: ${JSON.stringify(r.id)}, task: ${JSON.stringify(task)} },`);
 	}
 	blocks.push("  ],");
@@ -70,11 +88,13 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push("```");
 	blocks.push("");
 
-	// Step 2 — gate (skipped in lite mode).
+	// Step 3 — gate (skipped in lite mode).
 	if (!lite) {
-		blocks.push("## Step 2 — Gate");
+		blocks.push("## Step 3 — Gate");
 		blocks.push("");
-		blocks.push("After all reviewers return, call `subagent` once more to synthesize with the gate model:");
+		blocks.push(
+			"After all reviewers return, call `subagent` once more to synthesize with the gate model:",
+		);
 		blocks.push("");
 		const gateTask = `Read ${resolveGatePromptPath()} and follow its instructions. Synthesize the reviewer findings: dedupe by (file, line, category), re-score each issue 1-10, and drop any with confidence < ${threshold}. Return the surviving issues and a verdict.`;
 		blocks.push("```js");
@@ -86,8 +106,8 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		blocks.push("");
 	}
 
-	// Report step (numbered 2 in lite, 3 otherwise).
-	const reportStep = lite ? 2 : 3;
+	// Report is step 3 in lite (gate skipped), step 4 otherwise.
+	const reportStep = lite ? 3 : 4;
 	blocks.push(`## Step ${reportStep} — Report`);
 	blocks.push("");
 	blocks.push("Write a single markdown report:");

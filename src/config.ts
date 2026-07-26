@@ -8,8 +8,8 @@
  * top-level settings.json — that file is managed by pi itself.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import type { PiReviewConfig, ReviewerSpec, ScorePerIssueMode } from "./types.js";
 
 /**
@@ -95,9 +95,21 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 /** Hard upper bound on parallel reviewers, regardless of user config. */
 export const MAX_PARALLEL_CONCURRENCY = 4;
 
-/** Canonical config file path under the agent dir. */
+/**
+ * Canonical config file path — top-level beside `permission-modes.json`,
+ * `settings.json`, etc. (mirrors pi-permission-modes), so it is easy to find.
+ * Tests override it via `setConfigPath` to point at a sandbox.
+ */
+const DEFAULT_CONFIG_PATH = join(homedir(), ".pi", "agent", "pi-review.json");
+let _configPath = DEFAULT_CONFIG_PATH;
+
 export function configPath(): string {
-	return join(getAgentDir(), "extensions", "pi-review", "config.json");
+	return _configPath;
+}
+
+/** Override the config path (used by tests). Pass nothing to reset to default. */
+export function setConfigPath(p?: string): void {
+	_configPath = p ?? DEFAULT_CONFIG_PATH;
 }
 
 /**

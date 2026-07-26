@@ -72,16 +72,18 @@ The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer
 
 ## Pipeline
 
-`/review` runs in the foreground: the handler builds a directive and injects it into the main agent via `sendUserMessage`; the main agent then executes it openly using the `subagent` tool (from pi-subagents):
+`/review` runs in the foreground: the handler builds a directive and injects it **hidden** into the main agent (`sendMessage` with `display:false` + `triggerTurn:true` — only a short `/review <prompt>` echo is shown in chat). The main agent obtains the diff once, then fans out reviewers via the `subagent` tool (from pi-subagents):
 
 ```text
-handler:  parse args → load config → resolve target → build directive → sendUserMessage
+handler:  parse args → load config → resolve target → build directive
+          → sendMessage(echo, display:true) + sendMessage(directive, display:false, triggerTurn:true)
 main agent (foreground streaming):
-  Step 1  subagent({ tasks: [5 reviewers] })        — each reads agents/<id>.md
-  Step 2  subagent({ task: gate, model: <cheap> })  — reads prompts/gate.md
-  Step 3  markdown report (verdict + findings)
+  Step 1  obtain diff → /tmp/pi-review-change.diff
+  Step 2  subagent({ tasks: [5 reviewers] })        — each reads the diff + agents/<id>.md
+  Step 3  subagent({ task: gate, model: <cheap> })  — reads prompts/gate.md
+  Step 4  markdown report (verdict + findings)
 
---lite: Step 1 with a single lite-reviewer; skip Step 2.
+--lite: Step 2 with a single lite-reviewer; skip Step 3.
 ```
 
 The two-level idea matches Claude's code-review (parallel find → independent confidence filter), but verdict/threshold are now **instructed** to the main agent rather than code-enforced — the LLM follows the rule but it is no longer a hard guarantee. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
@@ -91,7 +93,7 @@ The two-level idea matches Claude's code-review (parallel find → independent c
 Per-user config lives at:
 
 ```text
-~/.pi/agent/extensions/pi-review/config.json
+~/.pi/agent/pi-review.json
 ```
 
 Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with the built-in defaults, and validated on every `/review` call. Unknown reviewer ids are added as new reviewers; known ids are patched in place.

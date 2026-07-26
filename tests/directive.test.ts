@@ -22,7 +22,7 @@ const DIMENSIONS = ["bugbot", "security-review", "claude-md-compliance", "code-c
 describe("buildReviewDirective", () => {
 	const reviewers = DIMENSIONS.map(fakeReviewer);
 
-	test("fan-out mode: lists 5 reviewers + gate with model + threshold", () => {
+	test("fan-out: main agent obtains diff, 5 reviewers read it, gate + report", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget(),
 			reviewers,
@@ -30,18 +30,25 @@ describe("buildReviewDirective", () => {
 			threshold: 8,
 			lite: false,
 		});
-		assert.match(d, /Step 1 — Fan out reviewers/);
+		// Step 1 — main agent writes the shared diff file.
+		assert.match(d, /Step 1 — Obtain the change/);
+		assert.match(d, /git diff HEAD > \S*\/tmp\/pi-review-change\.diff/);
+		// Step 2 — every reviewer reads that file + its own prompt.
+		assert.match(d, /Step 2 — Fan out reviewers/);
 		assert.match(d, /concurrency: 5/);
 		for (const id of DIMENSIONS) {
+			assert.match(d, new RegExp(`Read /tmp/pi-review-change\\.diff`));
 			assert.match(d, new RegExp(`agents/${id}\\.md`));
 		}
-		assert.match(d, /Step 2 — Gate/);
+		// Step 3 — gate with model + threshold.
+		assert.match(d, /Step 3 — Gate/);
 		assert.match(d, /model: "anthropic\/claude-haiku-4-5"/);
 		assert.match(d, /confidence < 8/);
-		assert.match(d, /Step 3 — Report/);
+		// Step 4 — report.
+		assert.match(d, /Step 4 — Report/);
 	});
 
-	test("lite mode: single reviewer, no gate, report is step 2", () => {
+	test("lite: obtain + single reviewer + no gate + report is step 3", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget(),
 			reviewers: [fakeReviewer("lite-review")],
@@ -49,10 +56,11 @@ describe("buildReviewDirective", () => {
 			threshold: 8,
 			lite: true,
 		});
+		assert.match(d, /Step 1 — Obtain the change/);
 		assert.match(d, /concurrency: 1/);
 		assert.match(d, /agents\/lite-review\.md/);
-		assert.doesNotMatch(d, /Step 2 — Gate/);
-		assert.match(d, /Step 2 — Report/);
+		assert.doesNotMatch(d, /Step 3 — Gate/);
+		assert.match(d, /Step 3 — Report/);
 		assert.match(d, /Lite mode skips the gate/);
 	});
 
@@ -67,7 +75,7 @@ describe("buildReviewDirective", () => {
 		assert.match(d, /\*\*User request:\*\* focus on concurrency and secrets/);
 	});
 
-	test("gate model override flows into step 2", () => {
+	test("gate model override flows into step 3", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget(),
 			reviewers,
@@ -78,7 +86,7 @@ describe("buildReviewDirective", () => {
 		assert.match(d, /model: "anthropic\/claude-sonnet-4-6"/);
 	});
 
-	test("PR target embeds gh obtain commands in each reviewer task", () => {
+	test("PR target puts `gh pr diff` in step 1 (not per-reviewer)", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget({
 				kind: "pr",
@@ -91,6 +99,6 @@ describe("buildReviewDirective", () => {
 			threshold: 8,
 			lite: false,
 		});
-		assert.match(d, /gh pr (view|diff)/);
+		assert.match(d, /gh pr diff https:\/\/github\.com\/o\/r\/pull\/99 > \S*\/tmp\/pi-review-change\.diff/);
 	});
 });

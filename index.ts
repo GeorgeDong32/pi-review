@@ -106,15 +106,21 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 
-				// Inject into the main agent — it runs the review in the open
-				// (foreground streaming) via the `subagent` tool from pi-subagents.
-				notify(
-					parsed.lite
-						? "pi-review --lite: delegating to main agent (single pass, no gate)…"
-						: `pi-review: delegating to main agent (${reviewers.length} reviewers + gate)…`,
-					"info",
+				// a) Visible echo of the user's command. Extension commands don't
+				//    otherwise appear in chat, so surface it as a one-liner. This
+				//    does NOT trigger a turn — it just shows `/review <prompt>`.
+				pi.sendMessage({
+					customType: "pi-review-prompt",
+					content: parsed.input ? `/review ${parsed.input}` : "/review",
+					display: true,
+				});
+				// b) Hidden directive — the main agent executes it as a user turn
+				//    (display:false hides the full text; triggerTurn starts it).
+				//    The main agent fans out reviewers via the `subagent` tool.
+				pi.sendMessage(
+					{ customType: "pi-review-directive", content: directive, display: false },
+					{ triggerTurn: true },
 				);
-				pi.sendUserMessage(directive);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				notify(`pi-review failed: ${message}`, "error");
@@ -123,7 +129,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("review-config", {
-		description: "Edit pi-review config (~/.pi/agent/extensions/pi-review/config.json)",
+		description: "Edit pi-review config (~/.pi/agent/pi-review.json)",
 		handler: async (_args, ctx) => {
 			const path = configPath();
 			if (!existsSync(path)) {

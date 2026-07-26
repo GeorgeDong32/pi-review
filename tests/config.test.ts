@@ -20,6 +20,7 @@ import {
 	loadRawConfig,
 	mergeWithDefaults,
 	resolveModel,
+	setConfigPath,
 	validateConfig,
 	writeConfig,
 } from "../src/config.js";
@@ -28,13 +29,14 @@ let sandbox: string;
 
 beforeEach(() => {
 	sandbox = mkdtempSync(join(tmpdir(), "pi-review-config-"));
-	// Point getAgentDir at the sandbox so configPath() resolves inside it.
-	process.env.PI_CODING_AGENT_DIR = sandbox;
+	// Point configPath() at the sandbox so tests don't touch the real
+	// ~/.pi/agent/pi-review.json.
+	setConfigPath(join(sandbox, "pi-review.json"));
 });
 
 afterEach(() => {
 	rmSync(sandbox, { recursive: true, force: true });
-	delete process.env.PI_CODING_AGENT_DIR;
+	setConfigPath(); // reset to default
 });
 
 describe("mergeWithDefaults", () => {
