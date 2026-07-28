@@ -41,8 +41,8 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			label: "Claude-MD Compliance",
 			enabled: true,
 			model: "inherit",
-			thinking: "high",
-			tools: ["read", "grep", "find", "ls", "bash"],
+			thinking: "medium",
+			tools: ["read", "grep", "ls"],
 		},
 		"bugbot": {
 			id: "bugbot",
@@ -50,7 +50,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find", "bash"],
+			tools: ["read", "grep"],
 		},
 		"history-context": {
 			id: "history-context",
@@ -66,7 +66,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find", "bash"],
+			tools: ["read", "grep"],
 		},
 		"code-comments": {
 			id: "code-comments",
@@ -74,7 +74,7 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find", "ls", "bash"],
+			tools: ["read", "grep"],
 		},
 		"conventions": {
 			id: "conventions",
@@ -82,12 +82,14 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: false,
 			model: "inherit",
 			thinking: "medium",
-			tools: ["read", "grep", "find", "ls", "bash"],
+			tools: ["read", "grep", "ls"],
 		},
 	},
 	inheritance: {
 		toolsDefault: ["read", "grep", "find", "ls", "bash"],
-		inheritProjectContext: true,
+		// Directive path uses lean pi-review.* agents with inheritProjectContext:false.
+		// Keep the spawn-path default aligned so fallback does not re-inject CLAUDE.md × N.
+		inheritProjectContext: false,
 		inheritSkills: false,
 	},
 };

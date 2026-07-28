@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 
 import { parseReviewArgs } from "../src/cli-args.js";
+import { setConfigPath, writeConfig, DEFAULT_CONFIG } from "../src/config.js";
 import { resetRunGh, setRunGh } from "../src/git-input.js";
 import { runReviewPipeline, type ReviewPipelineContext } from "../src/run.js";
 
@@ -25,9 +26,18 @@ function mockCtx(cwd: string): ReviewPipelineContext {
 describe("smoke pipeline", () => {
 	afterEach(() => {
 		resetRunGh();
+		setConfigPath(); // reset to default path
 	});
 
+	function useIsolatedConfig(): void {
+		const dir = mkdtempSync(join(tmpdir(), "pi-review-cfg-"));
+		const path = join(dir, "pi-review.json");
+		setConfigPath(path);
+		writeConfig(DEFAULT_CONFIG);
+	}
+
 	it("dry-run outside git without PR skips", async () => {
+		useIsolatedConfig();
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-"));
 		writeFileSync(join(dir, "sample.ts"), "export const x = 1;\n");
 
@@ -39,6 +49,7 @@ describe("smoke pipeline", () => {
 	});
 
 	it("dry-run --lite uses single-agent mode with no gate", async () => {
+		useIsolatedConfig();
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-lite-"));
 		setRunGh(async (args) => {
 			if (args[0] === "pr" && args[1] === "view") {
@@ -69,6 +80,7 @@ describe("smoke pipeline", () => {
 	});
 
 	it("dry-run with oversized PR still succeeds (agent-fetch)", async () => {
+		useIsolatedConfig();
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-smoke-pr-"));
 		setRunGh(async (args) => {
 			if (args[0] === "pr" && args[1] === "view") {

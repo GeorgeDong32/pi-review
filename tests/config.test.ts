@@ -125,7 +125,7 @@ describe("mergeWithDefaults", () => {
 		});
 		assert.deepEqual(merged.inheritance.toolsDefault, ["read", "bash"]);
 		assert.equal(merged.inheritance.inheritSkills, true);
-		assert.equal(merged.inheritance.inheritProjectContext, true); // unchanged
+		assert.equal(merged.inheritance.inheritProjectContext, false); // unchanged default
 	});
 });
 

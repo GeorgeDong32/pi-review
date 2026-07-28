@@ -16,15 +16,15 @@ Pattern ported from the Claude code-review plugin. See [reference/](./reference/
 
 ### `/review`
 
-**CC-aligned (v0.4):** text after `/review` is **user context**. The plugin does **not** pre-fetch and embed a full diff. Reviewer subagents obtain the change themselves with `gh` / `git` / `read` (same idea as Claude `/code-review`).
+**CC-aligned:** text after `/review` is **user context**. The main agent obtains the diff once into `.pi/pi-review/change.diff`; lean `pi-review.*` subagents review that file (same orchestration idea as Claude `/code-review`, with token budgets pinned in the directive).
 
-When called with no arguments, `/review` targets **local git** and tells agents to:
+When called with no arguments, `/review` targets **local git** and tells the main agent to:
 
-1. If the working tree is dirty → use `git diff HEAD` (and untracked files as needed).
-2. If clean → use `git diff <default-branch>...HEAD`.
-3. Outside a git repo with no PR/`--diff` → notify and exit.
+1. If the working tree is dirty → `git diff HEAD` into `.pi/pi-review/change.diff`.
+2. If clean → `git diff <default-branch>...HEAD`.
+3. Outside a git repo with no PR → notify and exit.
 
-**PR review:** pass a GitHub PR URL or number. Agents are instructed to try `gh pr view` / `gh pr diff`, and if the diff is too large (GitHub 20k-line limit), fall back to git / path-scoped reads. Oversized PRs no longer fail in the plugin layer.
+**PR review:** pass a GitHub PR URL or number. The main agent tries `gh pr diff`; if the diff is too large (GitHub 20k-line limit), it falls back to git. Oversized PRs no longer fail in the plugin layer.
 
 ```text
 /review https://github.com/org/repo/pull/17206
@@ -59,34 +59,43 @@ The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer
 | `--score-per-issue MODE` | `gate.scorePerIssue` |
 | `--diff path` | *(removed — pass a PR url or run in a dirty repo instead)* |
 
-## Bundled reviewers (v0.4)
+## Bundled reviewers (v0.5.1 lean agents)
+
+Runtime names are `pi-review.<id>` (package agents registered via `pi.subagents.agents`).
 
 | ID | Purpose | Default | Tools |
 |---|---|---|---|
-| `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, find, ls, bash |
-| `bugbot` | Obvious bugs in introduced lines only | enabled | read, grep, find, bash |
-| `history-context` | Git blame / log context on touched files | enabled | read, bash |
-| `security-review` | Security issues introduced by the change | enabled | read, grep, find, bash |
-| `code-comments` | Inline comment / TODO guidance in changed files | enabled | read, grep, find, ls, bash |
-| `conventions` | De-facto style pass | **disabled** | read, grep, find, ls, bash |
+| `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, ls |
+| `bugbot` | Obvious bugs in introduced lines only | enabled | read, grep |
+| `history-context` | Light git blame / log (≤5 files, `log -n 5`) | enabled | read, bash |
+| `security-review` | Security issues introduced by the change | enabled | read, grep |
+| `code-comments` | Inline comment / TODO guidance in changed files | enabled | read, grep |
+| `conventions` | De-facto style pass | **disabled** | read, grep, ls |
+| `gate` | Dedupe + re-score + verdict | (always) | read |
+| `lite-review` | Single-agent all-dimensions (`--lite`) | on demand | read, grep, bash |
 
 ## Pipeline
 
-`/review` runs in the foreground: the handler builds a directive and injects it **hidden** into the main agent (`sendMessage` with `display:false` + `triggerTurn:true` — only a short `/review <prompt>` echo is shown in chat). The main agent obtains the diff once, then fans out reviewers via the `subagent` tool (from pi-subagents):
+`/review` runs in the foreground: the handler builds a directive and injects it **hidden** into the main agent (`sendMessage` with `display:false` + `triggerTurn:true` — only a short `/review <prompt>` echo is shown in chat). The main agent obtains the diff once, then fans out **lean** reviewers via the `subagent` tool (from pi-subagents):
 
 ```text
 handler:  parse args → load config → resolve target → build directive
           → sendMessage(echo, display:true) + sendMessage(directive, display:false, triggerTurn:true)
 main agent (foreground streaming):
-  Step 1  obtain diff → /tmp/pi-review-change.diff
-  Step 2  subagent({ tasks: [5 reviewers] })        — each reads the diff + agents/<id>.md
-  Step 3  subagent({ task: gate, model: <cheap> })  — reads prompts/gate.md
-  Step 4  markdown report (verdict + findings) → chat
+  Step 1  obtain diff → .pi/pi-review/change.diff  (write only — do not read)
+  Step 2  subagent({
+            tasks: [{ agent: "pi-review.bugbot", … }, …],
+            turnBudget, toolBudget, reads:false, outputMode:"file-only", acceptance:false
+          })
+  Step 3  subagent({ agent: "pi-review.gate", model: <cheap>, … })
+  Step 4  markdown report from file-only outputs → chat (do not re-read the diff)
 
---lite: Step 2 with a single lite-reviewer; skip Step 3.
+--lite: Step 2 with pi-review.lite-review only; skip Step 3.
 ```
 
-The two-level idea matches Claude's code-review (parallel find → independent confidence filter), but verdict/threshold are now **instructed** to the main agent rather than code-enforced — the LLM follows the rule but it is no longer a hard guarantee. The main agent starts by posting a markdown checklist of the steps, then works through them. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
+**Cost model:** spend is dominated by N × multi-turn tool exploration, not the initial directive. v0.5.1 pins lean agents + budgets so the main agent cannot fall through to the builtin fat `reviewer`. Prefer `--lite` for a cheap gut-check.
+
+The two-level idea matches Claude's code-review (parallel find → independent confidence filter). The main agent starts by posting a markdown checklist of the steps, then works through them. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
 
 ## Configuration
 
@@ -127,7 +136,7 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
   },
   "inheritance": {
     "toolsDefault": ["read", "grep", "find", "ls", "bash"],
-    "inheritProjectContext": true,
+    "inheritProjectContext": false,
     "inheritSkills": false
   }
 }

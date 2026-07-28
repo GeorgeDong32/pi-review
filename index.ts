@@ -32,7 +32,7 @@ function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("review", {
-		description: "Code review in the foreground (parallel reviewers + gate via main agent). --lite = single-agent. Trailing text = any prompt.",
+		description: "Token-lean foreground code review (lean pi-review.* agents + budgets). --lite = single-agent. Trailing text = any prompt.",
 		getArgumentCompletions: (prefix: string) => {
 			const trimmed = prefix.trimStart();
 			const tokens = trimmed.split(/\s+/).filter(Boolean);
@@ -98,6 +98,7 @@ export default function (pi: ExtensionAPI) {
 					gateModel,
 					threshold: config.gate.threshold,
 					lite: parsed.lite,
+					cwd: ctx.cwd,
 				});
 
 				// Dry-run: show the directive instead of injecting it.

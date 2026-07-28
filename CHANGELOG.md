@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] - 2026-07-28
+
+### Changed
+- **Token-lean subagent fan-out:** the directive now pins every reviewer to a lean `pi-review.*` package agent (not the builtin fat `reviewer`), with explicit `turnBudget` / `toolBudget`, `reads: false`, `outputMode: "file-only"`, and `acceptance: false`.
+- **Shared diff under cwd:** write to `.pi/pi-review/change.diff` (not `/tmp/...`) so children can read it without outside-cwd blocks. Main agent must **write-only** — no read/summarize of the full diff; report from file-only outputs only.
+- **Lean agent prompts:** short CC-style briefs; `inheritProjectContext: false`; no obtain-change playbook; history capped at ≤5 files / `git log -n 5`.
+- Package agents registered via `pi.subagents.agents: ["./agents"]` (runtime names like `pi-review.bugbot`, `pi-review.gate`).
+- Default `inheritance.inheritProjectContext` is now `false`; reviewer tool lists narrowed.
+
+### Fixed
+- Directive path previously ignored pi-review config `tools` / `thinking` / inherit flags because the main agent fell through to builtin `reviewer` (`thinking: high`, edit/write/intercom, project context on).
+
+[0.5.1]: https://github.com/GeorgeDong32/pi-review/compare/v0.5.0...v0.5.1
+
 ## [0.5.0] - 2026-07-27
 
 ### Changed
