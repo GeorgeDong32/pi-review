@@ -4,14 +4,16 @@
  * Pipeline: eligibility → prep → parallel reviewers → gate → report.
  * See reference/pi-review-roadmap.md and reference/v0.2-plan.md.
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 
 import { parseReviewArgs } from "./src/cli-args.js";
 import { buildReviewDirective } from "./src/directive.js";
 import { checkEligibility } from "./src/eligibility.js";
 import { resolveReviewTarget } from "./src/git-input.js";
+import { resolveLeanBudgets } from "./src/lean-agents.js";
 import { extractPrRef } from "./src/pr-ref.js";
+import { ensureReviewPermissions } from "./src/review-permissions.js";
 import { liteReviewer, resolveReviewers } from "./src/run.js";
 import {
 	configPath,
@@ -32,12 +34,11 @@ function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("review", {
-		description: "Token-lean foreground code review (lean pi-review.* agents + budgets). --lite = single-agent. Trailing text = any prompt.",
+		description: "Foreground code review (lean pi-review.* agents). --lite = single-agent.",
 		getArgumentCompletions: (prefix: string) => {
 			const trimmed = prefix.trimStart();
 			const tokens = trimmed.split(/\s+/).filter(Boolean);
 			const last = tokens[tokens.length - 1] ?? "";
-			// Suggest flags only while typing a token that starts with "--".
 			if (last.startsWith("--")) {
 				return [
 					{ value: "--lite", label: "--lite", description: "Fast single-agent review (no gate)" },
@@ -57,8 +58,6 @@ export default function (pi: ExtensionAPI) {
 				const { config } = loadConfig();
 				const parentModel = parentModelId(ctx);
 
-				// Resolve what to review (PR url / local-git). Freeform input also
-				// becomes target.userContext, which the directive injects.
 				let target: ReviewTarget | null = null;
 				try {
 					target = await resolveReviewTarget(ctx.cwd, { input: parsed.input });
@@ -82,7 +81,6 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 
-				// Reviewers: config-enabled set, or a single lite reviewer.
 				const reviewers = parsed.lite
 					? [liteReviewer(parentModel)]
 					: resolveReviewers(config, [], parentModel);
@@ -91,14 +89,30 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				const gateModel = resolveModel(parsed.gateModel ?? config.gate.model, parentModel);
+				const budgets = resolveLeanBudgets(config.budgets);
+
+				// Merge CC-aligned allow rules so headless reviewers are not blocked.
+				try {
+					const perm = ensureReviewPermissions(ctx.cwd);
+					if (perm.added.length > 0) {
+						notify(`pi-review: added ${perm.added.length} permission allow rule(s) for review tools.`, "info");
+					}
+				} catch (err) {
+					notify(
+						`pi-review: could not update permissions.local.json (${err instanceof Error ? err.message : String(err)})`,
+						"warning",
+					);
+				}
 
 				const directive = buildReviewDirective({
 					target,
 					reviewers,
 					gateModel,
+					gateThinking: config.gate.thinking,
 					threshold: config.gate.threshold,
 					lite: parsed.lite,
 					cwd: ctx.cwd,
+					budgets,
 				});
 
 				// Dry-run: show the directive instead of injecting it.

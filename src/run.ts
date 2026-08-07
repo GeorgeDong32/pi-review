@@ -1,7 +1,7 @@
 /**
  * `/review` pipeline orchestration (v0.4 agent-driven).
  */
-import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 import type { ParsedReviewArgs } from "./cli-args.js";
 import { loadConfig, resolveModel, clampThreshold } from "./config.js";

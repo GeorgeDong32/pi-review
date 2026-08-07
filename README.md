@@ -1,8 +1,8 @@
 # pi-review
 
-Pi extension for code review that runs **in the foreground**: `/review` hands a directive to the main agent, which fans out parallel reviewers + a cheap-model gate via the `subagent` tool. The whole review streams in chat — no silent background work.
+Pi extension for code review that runs **in the foreground**: `/review` hands a directive to the main agent, which runs one `subagent({ workflowScript, async:false })` call that fans out parallel reviewers and an inline gate. The whole review streams in chat — no silent background work.
 
-Requires the **pi-subagents** extension (`pi install npm:@mariozechner/pi-subagents`) — it provides the `subagent` tool used to fan out.
+Requires the **pi-subagents** extension (`pi install npm:pi-subagents`, ≥0.41) — it provides the `subagent` tool's `workflowScript` surface used to fan out.
 
 Pattern ported from the Claude code-review plugin. See [reference/](./reference/) for upstream flow notes and the version roadmap.
 
@@ -21,10 +21,11 @@ Pattern ported from the Claude code-review plugin. See [reference/](./reference/
 When called with no arguments, `/review` targets **local git** and tells the main agent to:
 
 1. If the working tree is dirty → `git diff HEAD` into `.pi/pi-review/change.diff`.
-2. If clean → `git diff <default-branch>...HEAD`.
+2. If clean → **`git fetch origin <default-branch>`**, then `git diff origin/<default-branch>...HEAD` (avoids a stale local `main`/`master`).
+3. Also writes `changed-files.txt`, `change-kind.txt` (`docs`|`code`), and `diff-meta.txt` (base/head SHAs).
 3. Outside a git repo with no PR → notify and exit.
 
-**PR review:** pass a GitHub PR URL or number. The main agent tries `gh pr diff`; if the diff is too large (GitHub 20k-line limit), it falls back to git. Oversized PRs no longer fail in the plugin layer.
+**PR review:** pass a GitHub PR URL or number. The main agent tries `gh pr diff`; if the diff is too large (GitHub 20k-line limit) or unavailable, it fetches `pull/<n>/head` + the PR base ref and runs a three-dot git diff. Oversized PRs no longer fail in the plugin layer.
 
 ```text
 /review https://github.com/org/repo/pull/17206
@@ -66,9 +67,9 @@ Runtime names are `pi-review.<id>` (package agents registered via `pi.subagents.
 | ID | Purpose | Default | Tools |
 |---|---|---|---|
 | `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, ls |
-| `bugbot` | Obvious bugs in introduced lines only | enabled | read, grep |
+| `bugbot` | Obvious bugs in introduced lines only | enabled | read, grep, bash |
 | `history-context` | Light git blame / log (≤5 files, `log -n 5`) | enabled | read, bash |
-| `security-review` | Security issues introduced by the change | enabled | read, grep |
+| `security-review` | Security issues introduced by the change | enabled | read, grep, bash |
 | `code-comments` | Inline comment / TODO guidance in changed files | enabled | read, grep |
 | `conventions` | De-facto style pass | **disabled** | read, grep, ls |
 | `gate` | Dedupe + re-score + verdict | (always) | read |
@@ -76,26 +77,18 @@ Runtime names are `pi-review.<id>` (package agents registered via `pi.subagents.
 
 ## Pipeline
 
-`/review` runs in the foreground: the handler builds a directive and injects it **hidden** into the main agent (`sendMessage` with `display:false` + `triggerTurn:true` — only a short `/review <prompt>` echo is shown in chat). The main agent obtains the diff once, then fans out **lean** reviewers via the `subagent` tool (from pi-subagents):
+`/review` runs in the foreground: the handler builds a directive and injects it **hidden** into the main agent. The main agent obtains the diff once, then runs **one** `subagent({ workflowScript, async:false })` call that fans out **lean** reviewers and runs the inline gate:
 
 ```text
-handler:  parse args → load config → resolve target → build directive
-          → sendMessage(echo, display:true) + sendMessage(directive, display:false, triggerTurn:true)
-main agent (foreground streaming):
-  Step 1  obtain diff → .pi/pi-review/change.diff  (write only — do not read)
-  Step 2  subagent({
-            tasks: [{ agent: "pi-review.bugbot", … }, …],
-            turnBudget, toolBudget, reads:false, outputMode:"file-only", acceptance:false
-          })
-  Step 3  subagent({ agent: "pi-review.gate", model: <cheap>, … })
-  Step 4  markdown report from file-only outputs → chat (do not re-read the diff)
-
---lite: Step 2 with pi-review.lite-review only; skip Step 3.
+Step 1  obtain → .pi/pi-review/change.diff + changed-files.txt + change-kind.txt
+Step 2  subagent({ workflowScript, async:false }) — once
+          runs.all([ pi-review.* reviewers … ]) → runs.run("gate", { inline findings })
+Step 3  report from the workflow return value (do not re-read the diff)
 ```
 
-**Cost model:** spend is dominated by N × multi-turn tool exploration, not the initial directive. v0.5.1 pins lean agents + budgets so the main agent cannot fall through to the builtin fat `reviewer`. Prefer `--lite` for a cheap gut-check.
+**Permissions:** on each `/review`, CC-aligned allow rules (7× `gh` + read-only `git` + Read/Grep) are merged into `.pi/projects/<id>/permissions.local.json` so headless reviewers are not blocked by permission-modes (no ask UI in children).
 
-The two-level idea matches Claude's code-review (parallel find → independent confidence filter). The main agent starts by posting a markdown checklist of the steps, then works through them. The original background spawn path (`src/run.ts`, `src/spawn.ts`) is kept as a fallback.
+**Cost:** dominated by N × tool turns. Prefer `--lite` for a cheap pass. Reviewer thinking **inherits** the parent session; only the gate uses `config.gate.thinking`.
 
 ## Configuration
 
@@ -121,7 +114,10 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
     // Per-issue scorers: "off" (default) | "blocker-major" | "all"
     "scorePerIssue": "off"
   },
-  "concurrency": 4,            // hard cap = 4
+  "concurrency": 4,
+  "budgets": {
+    "turnBudget": { "maxTurns": 20, "graceTurns": 2 }
+  },
   "reviewers": {
     "claude-md-compliance": {
       "model": "anthropic/claude-opus-4-6",

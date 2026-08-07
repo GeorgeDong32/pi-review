@@ -41,7 +41,6 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			label: "Claude-MD Compliance",
 			enabled: true,
 			model: "inherit",
-			thinking: "medium",
 			tools: ["read", "grep", "ls"],
 		},
 		"bugbot": {
@@ -49,15 +48,13 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			label: "Bugbot",
 			enabled: true,
 			model: "inherit",
-			thinking: "medium",
-			tools: ["read", "grep"],
+			tools: ["read", "grep", "bash"],
 		},
 		"history-context": {
 			id: "history-context",
 			label: "History Context",
 			enabled: true,
 			model: "inherit",
-			thinking: "minimal",
 			tools: ["read", "bash"],
 		},
 		"security-review": {
@@ -65,15 +62,13 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			label: "Security Review",
 			enabled: true,
 			model: "inherit",
-			thinking: "medium",
-			tools: ["read", "grep"],
+			tools: ["read", "grep", "bash"],
 		},
 		"code-comments": {
 			id: "code-comments",
 			label: "Code Comments",
 			enabled: true,
 			model: "inherit",
-			thinking: "medium",
 			tools: ["read", "grep"],
 		},
 		"conventions": {
@@ -81,16 +76,16 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			label: "Conventions",
 			enabled: false,
 			model: "inherit",
-			thinking: "medium",
 			tools: ["read", "grep", "ls"],
 		},
 	},
 	inheritance: {
 		toolsDefault: ["read", "grep", "find", "ls", "bash"],
-		// Directive path uses lean pi-review.* agents with inheritProjectContext:false.
-		// Keep the spawn-path default aligned so fallback does not re-inject CLAUDE.md × N.
 		inheritProjectContext: false,
 		inheritSkills: false,
+	},
+	budgets: {
+		turnBudget: { maxTurns: 20, graceTurns: 2 },
 	},
 };
 
@@ -207,6 +202,24 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 		}
 		if (typeof inh.inheritSkills === "boolean") {
 			base.inheritance.inheritSkills = inh.inheritSkills;
+		}
+	}
+
+	// Optional budgets (directive path).
+	if (r.budgets && typeof r.budgets === "object" && !Array.isArray(r.budgets)) {
+		const b = r.budgets as Record<string, unknown>;
+		base.budgets = base.budgets ?? { turnBudget: { maxTurns: 20, graceTurns: 2 } };
+		if (b.turnBudget && typeof b.turnBudget === "object" && !Array.isArray(b.turnBudget)) {
+			const tb = b.turnBudget as Record<string, unknown>;
+			base.budgets.turnBudget = {
+				...base.budgets.turnBudget,
+				...(typeof tb.maxTurns === "number" && Number.isFinite(tb.maxTurns)
+					? { maxTurns: Math.max(1, Math.min(48, Math.floor(tb.maxTurns))) }
+					: {}),
+				...(typeof tb.graceTurns === "number" && Number.isFinite(tb.graceTurns)
+					? { graceTurns: Math.max(0, Math.floor(tb.graceTurns)) }
+					: {}),
+			};
 		}
 	}
 

@@ -1,8 +1,19 @@
 import { strict as assert } from "node:assert";
 import { describe, test } from "node:test";
 
-import { buildReviewDirective, DIFF_REL_PATH, diffFilePath } from "../src/directive.js";
-import { leanAgentName, LEAN_BUDGETS, LEAN_GATE_AGENT } from "../src/lean-agents.js";
+import {
+	buildReviewDirective,
+	DIFF_REL_PATH,
+	FILES_REL_PATH,
+	diffFilePath,
+} from "../src/directive.js";
+import {
+	leanAgentName,
+	LEAN_BUDGETS,
+	LEAN_GATE_AGENT,
+	resolveLeanBudgets,
+	withThinkingSuffix,
+} from "../src/lean-agents.js";
 import type { ReviewerSpec, ReviewTarget } from "../src/types.js";
 
 function fakeTarget(overrides: Partial<ReviewTarget> = {}): ReviewTarget {
@@ -24,64 +35,64 @@ const DIMENSIONS = ["bugbot", "security-review", "claude-md-compliance", "code-c
 describe("buildReviewDirective", () => {
 	const reviewers = DIMENSIONS.map(fakeReviewer);
 
-	test("fan-out: lean agents + budgets + file-only + no builtin reviewer", () => {
+	test("fan-out: lean agents + budgets + single-wave rules + file list", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget(),
 			reviewers,
 			gateModel: "anthropic/claude-haiku-4-5",
+			gateThinking: "low",
 			threshold: 8,
 			lite: false,
 			cwd: CWD,
 		});
-		// Step 1 — write-only diff under cwd (not /tmp).
 		assert.match(d, /Step 1 — Obtain the change/);
 		assert.match(d, new RegExp(DIFF_REL_PATH.replace(/\./g, "\\.")));
+		assert.match(d, new RegExp(FILES_REL_PATH.replace(/\./g, "\\.")));
+		assert.match(d, /change-kind/);
 		assert.match(d, /Do not read, cat, or summarize the diff/);
 		assert.doesNotMatch(d, /\/tmp\/pi-review-change\.diff/);
 
-		// Step 2 — lean agents + budgets.
-		assert.match(d, /Step 2 — Fan out lean reviewers/);
-		assert.match(d, /concurrency: 4/); // min(5, 4)
-		assert.match(d, /turnBudget: \{ maxTurns: 12, graceTurns: 2 \}/);
-		assert.match(d, /timeoutMs: 600000/);
+		assert.match(d, /exactly one/);
+		assert.match(d, /Do not retry/);
+		assert.match(d, /never one call per reviewer/);
+
+		assert.match(d, /Step 2 — Run the review/);
+		// workflowScript API shape (pi-subagents ≥0.41). The script body is
+		// JSON-stringified inside the directive, so inner quotes appear as \\".
+		assert.match(d, /workflowScript:/);
+		assert.match(d, /runs\.all\(\[/);
+		assert.match(d, /runs\.run\(\\"gate\\"/);
+		assert.match(d, /async: false/);
 		assert.match(d, /context: "fresh"/);
-		assert.match(d, /do not substitute the builtin `reviewer`/);
+		assert.match(d, /turnBudget: \{ maxTurns: 20, graceTurns: 2 \}/);
+		assert.match(d, /do not substitute builtin `reviewer`/);
+		// Legacy top-level inputs must NOT appear (they are rejected at runtime).
+		assert.doesNotMatch(d, /\breads:/);
+		assert.doesNotMatch(d, /tasks:\s*\[/);
+		assert.doesNotMatch(d, /concurrency:/);
+		assert.doesNotMatch(d, /outputMode: "file-only"/);
+		assert.doesNotMatch(d, /acceptance: false/);
 
 		for (const id of DIMENSIONS) {
-			assert.match(d, new RegExp(`agent: "${leanAgentName(id)}"`));
-			assert.match(d, new RegExp(`output: "${id}"`));
+			// Inside the JSON-stringified workflowScript, quotes appear as \\".
+			assert.match(d, new RegExp(`agent: \\\\"${leanAgentName(id)}\\\\"`));
 		}
-		assert.match(d, /outputMode: "file-only"/);
-		assert.match(d, /reads: false/);
-		assert.match(d, /acceptance: false/);
-		assert.match(d, /toolBudget: \{ soft: 15, hard: 25 \}/);
-		assert.match(d, /toolBudget: \{ soft: 10, hard: 18 \}/); // history
-		// Task embeds diff path; does NOT tell child to re-read agents/*.md.
-		assert.match(d, new RegExp(`Read ${diffFilePath(CWD).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		// Per-child tool budgets are injected onto each runs.all item.
+		assert.match(d, /toolBudget: \{ soft: 20, hard: 32 \}/);
+		assert.match(d, /toolBudget: \{ soft: 14, hard: 24 \}/);
 		assert.doesNotMatch(d, /agents\/bugbot\.md/);
 
-		// Step 3 — gate lean agent.
-		assert.match(d, /Step 3 — Gate/);
-		assert.match(d, new RegExp(`agent: "${LEAN_GATE_AGENT}"`));
-		assert.match(d, /model: "anthropic\/claude-haiku-4-5"/);
-		assert.match(d, /confidence < 8|Threshold: 8/);
-		assert.match(
-			d,
-			new RegExp(
-				`turnBudget: \\{ maxTurns: ${LEAN_BUDGETS.gateTurnBudget.maxTurns}, graceTurns: ${LEAN_BUDGETS.gateTurnBudget.graceTurns} \\}`,
-			),
-		);
-
-		// Checklist + report.
-		assert.match(d, /- \[ \] Obtain the diff/);
-		assert.match(d, /- \[ \] Fan out 5 lean reviewers/);
-		assert.match(d, /- \[ \] Run the gate pass/);
-		assert.match(d, /- \[ \] Write the report/);
-		assert.match(d, /Step 4 — Report/);
+		// Gate is inlined inside the workflow script (no separate Step 3).
+		assert.doesNotMatch(d, /Step 3 — Gate/);
+		assert.match(d, new RegExp(`agent: \\\\"${LEAN_GATE_AGENT}\\\\"`));
+		assert.match(d, /model: \\"anthropic\/claude-haiku-4-5:low\\"/);
+		assert.match(d, /Threshold: 8/);
+		assert.match(d, /Reviewer findings are inlined below/);
 		assert.match(d, /Do not re-read the full diff/);
+		assert.match(d, /Step 3 — Report/);
 	});
 
-	test("lite: obtain + single lean reviewer + no gate + report is step 3", () => {
+	test("lite: one subagent max, no gate", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget(),
 			reviewers: [fakeReviewer("lite-review")],
@@ -90,17 +101,14 @@ describe("buildReviewDirective", () => {
 			lite: true,
 			cwd: CWD,
 		});
-		assert.match(d, /Step 1 — Obtain the change/);
-		assert.match(d, /concurrency: 1/);
-		assert.match(d, new RegExp(`agent: "${leanAgentName("lite-review")}"`));
-		assert.doesNotMatch(d, /agents\/lite-review\.md/);
-		assert.match(d, /- \[ \] Fan out a single lite-reviewer/);
+		assert.match(d, /exactly one/);
+		assert.match(d, new RegExp(`agent: \\\\"${leanAgentName("lite-review")}\\\\"`));
+		assert.match(d, /runs\.all\(\[/);
 		assert.doesNotMatch(d, /Step 3 — Gate/);
 		assert.match(d, /Step 3 — Report/);
-		assert.match(d, /Lite mode skips the gate/);
 	});
 
-	test("injects user request from target.userContext", () => {
+	test("injects user request", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget({ userContext: "focus on concurrency and secrets" }),
 			reviewers,
@@ -110,22 +118,9 @@ describe("buildReviewDirective", () => {
 			cwd: CWD,
 		});
 		assert.match(d, /\*\*User request:\*\* focus on concurrency and secrets/);
-		assert.match(d, /User request: focus on concurrency and secrets/);
 	});
 
-	test("gate model override flows into step 3", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget(),
-			reviewers,
-			gateModel: "anthropic/claude-sonnet-4-6",
-			threshold: 8,
-			lite: false,
-			cwd: CWD,
-		});
-		assert.match(d, /model: "anthropic\/claude-sonnet-4-6"/);
-	});
-
-	test("PR target puts `gh pr diff` in step 1 (not per-reviewer)", () => {
+	test("PR target puts gh pr diff in step 1", () => {
 		const d = buildReviewDirective({
 			target: fakeTarget({
 				kind: "pr",
@@ -139,14 +134,54 @@ describe("buildReviewDirective", () => {
 			lite: false,
 			cwd: CWD,
 		});
-		assert.match(d, /gh pr diff https:\/\/github\.com\/o\/r\/pull\/99 >/);
+		assert.match(d, /gh pr diff 'https:\/\/github\.com\/o\/r\/pull\/99'/);
+		assert.match(d, /git fetch origin/);
+		assert.match(d, /pull\/\$PR_NUM\/head/);
 		assert.match(d, new RegExp(diffFilePath(CWD).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+	});
+
+	test("local Step 1 fetches remote base before three-dot", () => {
+		const d = buildReviewDirective({
+			target: fakeTarget(),
+			reviewers,
+			gateModel: "anthropic/claude-haiku-4-5",
+			threshold: 8,
+			lite: false,
+			cwd: CWD,
+		});
+		assert.match(d, /fetch the remote default branch first/);
+		assert.match(d, /git fetch origin "\$BASE"/);
+		assert.match(d, /origin\/\$BASE/);
+		assert.match(d, /diff-meta/);
+	});
+
+	test("budget override flows into turnBudget", () => {
+		const d = buildReviewDirective({
+			target: fakeTarget(),
+			reviewers,
+			gateModel: "anthropic/claude-haiku-4-5",
+			threshold: 8,
+			lite: false,
+			cwd: CWD,
+			budgets: resolveLeanBudgets({ turnBudget: { maxTurns: 24, graceTurns: 2 } }),
+		});
+		assert.match(d, /turnBudget: \{ maxTurns: 24, graceTurns: 2 \}/);
 	});
 });
 
-describe("leanAgentName", () => {
-	test("namespaces under pi-review", () => {
+describe("lean helpers", () => {
+	test("leanAgentName namespaces under pi-review", () => {
 		assert.equal(leanAgentName("bugbot"), "pi-review.bugbot");
 		assert.equal(LEAN_GATE_AGENT, "pi-review.gate");
+	});
+
+	test("default turnBudget is 20", () => {
+		assert.equal(LEAN_BUDGETS.turnBudget.maxTurns, 20);
+	});
+
+	test("withThinkingSuffix", () => {
+		assert.equal(withThinkingSuffix("anthropic/claude-haiku-4-5", "low"), "anthropic/claude-haiku-4-5:low");
+		assert.equal(withThinkingSuffix("anthropic/claude-haiku-4-5:medium", "low"), "anthropic/claude-haiku-4-5:low");
+		assert.equal(withThinkingSuffix("anthropic/claude-haiku-4-5", undefined), "anthropic/claude-haiku-4-5");
 	});
 });

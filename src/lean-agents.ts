@@ -1,10 +1,17 @@
 /**
  * Mapping from pi-review reviewer ids → pi-subagents runtime agent names,
- * plus default turn/tool budgets for the token-lean directive path.
+ * plus per-child budgets for the token-lean workflowScript directive path.
  *
  * Agents live in `agents/*.md` and are registered via package.json
  * `pi.subagents.agents` so pi-subagents discovers them as package agents
  * (`pi-review.<id>`).
+ *
+ * Budget model (pi-subagents ≥0.41 workflowScript API): the top-level
+ * `subagent({ workflowScript })` call carries `context`/`timeoutMs` only;
+ * `turnBudget` and per-reviewer `toolBudget` are injected onto each
+ * `runs.all` / `runs.run` child item (child params override workflow
+ * defaults). `runs.run` rejects `tasks`/`chain`/`concurrency` but accepts
+ * `toolBudget`/`turnBudget`/`model`/`output`.
  */
 
 export const LEAN_AGENT_PACKAGE = "pi-review";
@@ -23,24 +30,24 @@ export interface ToolBudgetSpec {
 }
 
 export interface LeanBudgetSpec {
-	/** Top-level turn budget for the parallel fan-out call. */
+	/** Per-child turn budget, injected onto each runs.all / runs.run item. */
 	turnBudget: { maxTurns: number; graceTurns: number };
-	/** Per-task tool budget (overrides by reviewer id when present). */
+	/** Per-child tool budget for the default reviewer (injected per runs.all item). */
 	defaultToolBudget: ToolBudgetSpec;
-	/** Stricter budget for history-context. */
+	/** Stricter per-child tool budget for history-context (injected per runs.all item). */
 	historyToolBudget: ToolBudgetSpec;
-	/** Gate subagent budgets. */
+	/** Gate child budgets (injected onto the runs.run("gate", ...) item). */
 	gateTurnBudget: { maxTurns: number; graceTurns: number };
 	gateToolBudget: ToolBudgetSpec;
-	/** Wall-clock timeout for the fan-out / gate calls (ms). */
+	/** Wall-clock timeout for the top-level workflowScript call (ms). */
 	timeoutMs: number;
 }
 
-/** Defaults tuned for read-only review (pi-subagents README guidance). */
+/** Defaults (v0.5.2): more headroom; shallow prompts keep real usage lower. */
 export const LEAN_BUDGETS: LeanBudgetSpec = {
-	turnBudget: { maxTurns: 12, graceTurns: 2 },
-	defaultToolBudget: { soft: 15, hard: 25 },
-	historyToolBudget: { soft: 10, hard: 18 },
+	turnBudget: { maxTurns: 20, graceTurns: 2 },
+	defaultToolBudget: { soft: 20, hard: 32 },
+	historyToolBudget: { soft: 14, hard: 24 },
 	gateTurnBudget: { maxTurns: 6, graceTurns: 1 },
 	gateToolBudget: { soft: 5, hard: 10 },
 	timeoutMs: 600_000,
@@ -49,6 +56,31 @@ export const LEAN_BUDGETS: LeanBudgetSpec = {
 export function toolBudgetForReviewer(id: string): ToolBudgetSpec {
 	if (id === "history-context") return LEAN_BUDGETS.historyToolBudget;
 	return LEAN_BUDGETS.defaultToolBudget;
+}
+
+/** Merge optional config.budgets.turnBudget over defaults. */
+export function resolveLeanBudgets(override?: {
+	turnBudget?: { maxTurns?: number; graceTurns?: number };
+}): LeanBudgetSpec {
+	const base = { ...LEAN_BUDGETS, turnBudget: { ...LEAN_BUDGETS.turnBudget } };
+	if (override?.turnBudget?.maxTurns != null && override.turnBudget.maxTurns >= 1) {
+		base.turnBudget.maxTurns = Math.min(48, Math.floor(override.turnBudget.maxTurns));
+	}
+	if (override?.turnBudget?.graceTurns != null && override.turnBudget.graceTurns >= 0) {
+		base.turnBudget.graceTurns = Math.floor(override.turnBudget.graceTurns);
+	}
+	return base;
+}
+
+/** Append :thinking to a model id when thinking is set (gate path). */
+export function withThinkingSuffix(model: string, thinking?: string): string {
+	if (!thinking || thinking === "off" || thinking === "false") return model;
+	const colon = model.lastIndexOf(":");
+	const known = ["minimal", "low", "medium", "high", "xhigh", "max", "min"];
+	if (colon !== -1 && known.includes(model.slice(colon + 1))) {
+		return `${model.slice(0, colon)}:${thinking}`;
+	}
+	return `${model}:${thinking}`;
 }
 
 /** Shared false-positive list (injected once into the directive). */

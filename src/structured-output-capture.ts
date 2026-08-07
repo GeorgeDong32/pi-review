@@ -8,7 +8,7 @@
  *   PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE — write validated payload here as JSON
  */
 import { writeFileSync } from "node:fs";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 
 const capturePath = process.env.PI_SUBAGENT_STRUCTURED_OUTPUT_CAPTURE;

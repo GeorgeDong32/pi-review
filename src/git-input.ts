@@ -185,13 +185,18 @@ export async function resolveDefaultDiff(cwd: string): Promise<ResolvedInput | n
 
 	const base = await detectDefaultBranch(cwd);
 	if (!base) return null;
-	const diff = await _runGit(["diff", `${base}...HEAD`], { cwd });
+	// Refresh remote tip so we do not three-dot against a stale local main/master.
+	await _runGit(["fetch", "origin", base, "--quiet"], { cwd });
+	const originBase = `origin/${base}`;
+	const hasOrigin = await _runGit(["rev-parse", "--verify", originBase], { cwd });
+	const compare = hasOrigin.exitCode === 0 ? originBase : base;
+	const diff = await _runGit(["diff", `${compare}...HEAD`], { cwd });
 	if (diff.exitCode !== 0) return null;
 	if (diff.stdout.trim().length === 0) return null;
 	return {
 		content: diff.stdout,
-		source: { kind: "vs-default-branch", base },
-		label: `vs ${base}`,
+		source: { kind: "vs-default-branch", base: compare },
+		label: `vs ${compare}`,
 	};
 }
 

@@ -56,19 +56,25 @@ describe("resolveDefaultDiff", () => {
 	});
 
 	test("falls back to diff against default branch when tree is clean", async () => {
+		const fetched: string[][] = [];
 		setGitScript({
 			"status": () => ({ stdout: "", exitCode: 0 }),
 			"symbolic-ref": (args) => {
-				// Real invocation: git symbolic-ref --short refs/remotes/origin/HEAD
-				// → args = ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"].
 				if (args[2] === "refs/remotes/origin/HEAD") {
 					return { stdout: "origin/main\n", exitCode: 0 };
 				}
 				return { stdout: "", exitCode: 1 };
 			},
+			"fetch": (args) => {
+				fetched.push(args);
+				return { stdout: "", exitCode: 0 };
+			},
+			"rev-parse": (args) => {
+				if (args.includes("origin/main")) return { stdout: "abc\n", exitCode: 0 };
+				return { stdout: "", exitCode: 1 };
+			},
 			"diff": (args) => {
-				// args = ["diff", "main...HEAD"] — the comparator is in args[1].
-				if (args[1] === "main...HEAD") {
+				if (args[1] === "origin/main...HEAD") {
 					return { stdout: "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n", exitCode: 0 };
 				}
 				return { stdout: "", exitCode: 1 };
@@ -79,8 +85,9 @@ describe("resolveDefaultDiff", () => {
 		assert.ok(result);
 		assert.equal(result?.source.kind, "vs-default-branch");
 		if (result?.source.kind === "vs-default-branch") {
-			assert.equal(result.source.base, "main");
+			assert.equal(result.source.base, "origin/main");
 		}
+		assert.ok(fetched.some((a) => a.includes("main")));
 	});
 
 	test("returns null when clean tree and no default branch detected", async () => {

@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-08-07
+
+### Breaking
+- **workflowScript migration:** fan-out now runs through one `subagent({ workflowScript, async:false })` instead of the removed top-level `subagent({ tasks:[...] })` (pi-subagents ≥0.41 dropped legacy `tasks`/`chain`/`concurrency`). Step 2 and the gate merge into a single tool call: the script fans out reviewers via `runs.all([...])`, then feeds their inlined JSON findings to `runs.run("gate", ...)`.
+- **Peer deps:** `@mariozechner/*` → `@earendil-works/*`; added `pi-subagents >=0.41.0` (provides the `workflowScript` API). Source imports (`index.ts`, `src/run.ts`, `src/structured-output-capture.ts`) and devDependencies migrated to `@earendil-works/pi-coding-agent` as well; peer floor raised to `>=0.74.0` (lowest version published under the new scope).
+- **Removed directive params:** `reads: false`, `acceptance: false`, top-level `outputMode: "file-only"`, and `concurrency` — `reads` is not a valid top-level `subagent` field and would fail schema validation. Reviewers now return JSON as their final reply; the script captures `result.output`.
+
+### Changed
+- **Inline gate:** the gate task receives reviewer JSON inlined as text (no file-only indirection). Per-child `toolBudget`/`turnBudget` are injected onto each `runs.all` / `runs.run` item.
+- **Reviewer prompts:** all `agents/*.md` now say "return JSON as your final reply" (the `structured_output` fallback is kept for the legacy spawn path).
+- **Tests:** `tests/directive.test.ts` rewritten for the workflowScript shape (legacy-input `doesNotMatch` guards added).
+
+[0.6.0]: https://github.com/GeorgeDong32/pi-review/compare/v0.5.3...v0.6.0
+
+## [0.5.3] - 2026-07-31
+
+### Fixed
+- **Stale base diffs:** Step 1 now `git fetch`es the remote default branch and compares against `origin/<base>` (not a stale local `main`/`master`). PR path still prefers `gh pr diff`, with a fetch `pull/<n>/head` + three-dot fallback. Writes `.pi/pi-review/diff-meta.txt` (mode / base / SHAs / merge-base) for audit.
+- Allowlist adds `git fetch` / `git merge-base` / `git ls-files` for the obtain-diff path.
+
+## [0.5.2] - 2026-07-30
+
+### Changed
+- **Single-wave hard rules:** at most 2 `subagent` calls (1 fan-out + 1 gate); no per-reviewer serial calls; no retries on timeout/partial.
+- **turnBudget** default **20** (config `budgets.turnBudget`, up to 24/48); toolBudget soft/hard raised slightly.
+- **Reviewer thinking inherits** the parent session (no forced medium/low on lean agents). Gate uses `config.gate.model` + `config.gate.thinking` as `model:thinking`.
+- **Diff companion files:** write `.pi/pi-review/changed-files.txt` + `change-kind.txt` (`docs`|`code`); docs-only → bugbot/security empty early-exit.
+- **Shallow prompts:** diff-first; history one multi-path `git log`; bugbot/security may use allowlisted `git show|log|blame` when needed.
+
+### Added
+- **CC-aligned permission allowlist** (`src/review-permissions.ts`): Claude `/code-review` 7× `Bash(gh …:*)` plus history/obtain git + `Read`/`Grep`. `/review` merges them into `.pi/projects/<id>/permissions.local.json` (permission-modes) so headless children are not blocked.
+
+[0.5.3]: https://github.com/GeorgeDong32/pi-review/compare/v0.5.2...v0.5.3
+[0.5.2]: https://github.com/GeorgeDong32/pi-review/compare/v0.5.1...v0.5.2
+
 ## [0.5.1] - 2026-07-28
 
 ### Changed
