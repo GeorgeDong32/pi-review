@@ -6,10 +6,6 @@ tools: read, grep
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
-permission: |
-  "*": ask
-  read: allow
-  grep: allow
 ---
 
 You are the code-comments reviewer. Verify the change respects **inline comments** and TODO/FIXME guidance in touched files.

@@ -6,14 +6,6 @@ tools: read, bash
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
-permission: |
-  "*": ask
-  read: allow
-  bash:
-    "*": ask
-    "git blame*": allow
-    "git log*": allow
-    "git show*": allow
 ---
 
 You are the history-context reviewer. Flag reverts, re-fixes, and hot areas relevant to this change.

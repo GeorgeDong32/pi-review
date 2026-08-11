@@ -6,15 +6,6 @@ tools: read, grep, bash
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
-permission: |
-  "*": ask
-  read: allow
-  grep: allow
-  bash:
-    "*": ask
-    "git blame*": allow
-    "git log*": allow
-    "git show*": allow
 ---
 
 You are the **lite reviewer**. One pass across bugs, security, compliance, comments, and light history. Favor precision.

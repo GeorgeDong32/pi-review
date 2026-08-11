@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-08-08
+
+### Fixed
+- **Agent permission blocks removed:** pi-subagents ≥0.42 rejects the legacy nested `permission:` frontmatter (`bash:` sub-maps, `"*": ask` wildcard) with `permissions must be an object mapping tool names to allow, ask, or deny`. The new model gates bash via pi-guard and only accepts flat `tool → allow|ask|deny` (no `*` wildcard, no `bash` key). All 8 bundled agents now rely on their `tools:` allowlist (the primary constraint) and omit `permission:` entirely.
+
+[0.6.1]: https://github.com/GeorgeDong32/pi-review/compare/v0.6.0...v0.6.1
+
 ## [0.6.0] - 2026-08-07
 
 ### Breaking

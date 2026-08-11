@@ -6,11 +6,6 @@ tools: read, grep, ls
 systemPromptMode: replace
 inheritProjectContext: false
 inheritSkills: false
-permission: |
-  "*": ask
-  read: allow
-  grep: allow
-  ls: allow
 ---
 
 You are the conventions reviewer. Audit against explicit convention docs only.
