@@ -12,20 +12,21 @@ Pattern ported from the Claude code-review plugin. See [reference/](./reference/
 /review [any prompt] [--lite] [--gate-model <id>]
 /review-config
 /review-agents
+/review-show
 ```
 
 ### `/review`
 
-**CC-aligned:** text after `/review` is **user context**. The main agent obtains the diff once into `.pi/pi-review/change.diff`; lean `pi-review.*` subagents review that file (same orchestration idea as Claude `/code-review`, with token budgets pinned in the directive).
+**CC-aligned:** text after `/review` is **user context**. The extension **prepares the run deterministically** (v0.7): it resolves the target, acquires the diff, records a manifest (`.pi/pi-review/runs/<runId>/manifest.json`), and — for PRs — checks out the **target repo** into a scratch workspace. The main agent then runs one `subagent({ workflowScript, async:false })` and calls `pi_review_report` to finalize the report.
 
-When called with no arguments, `/review` targets **local git** and tells the main agent to:
+When called with no arguments, `/review` targets **local git**:
 
-1. If the working tree is dirty → `git diff HEAD` into `.pi/pi-review/change.diff`.
+1. If the working tree is dirty → `git diff HEAD` into `.pi/pi-review/runs/<runId>/change.diff`.
 2. If clean → **`git fetch origin <default-branch>`**, then `git diff origin/<default-branch>...HEAD` (avoids a stale local `main`/`master`).
-3. Also writes `changed-files.txt`, `change-kind.txt` (`docs`|`code`), and `diff-meta.txt` (base/head SHAs).
-3. Outside a git repo with no PR → notify and exit.
+3. Writes `manifest.json` (base/head SHAs, diff SHA-256, changed files, docs-only flag, rule paths, history availability).
+4. Outside a git repo with no PR → notify and exit.
 
-**PR review:** pass a GitHub PR URL or number. The main agent tries `gh pr diff`; if the diff is too large (GitHub 20k-line limit) or unavailable, it fetches `pull/<n>/head` + the PR base ref and runs a three-dot git diff. Oversized PRs no longer fail in the plugin layer.
+**PR review:** pass a GitHub PR URL or number. The extension tries `gh pr view` + `gh pr diff`; if the diff is too large (GitHub 20k-line limit) or unavailable, it fetches `pull/<n>/head` + the PR base ref and runs a three-dot git diff. Oversized PRs no longer fail in the plugin layer. Reviewers run from a **target workspace** (a shallow clone with the PR head checked out), so `history-context` / `code-comments` correctly see the reviewed repo even when the plugin runs from a different directory.
 
 ```text
 /review https://github.com/org/repo/pull/17206
@@ -77,16 +78,19 @@ Runtime names are `pi-review.<id>` (package agents registered via `pi.subagents.
 
 ## Pipeline
 
-`/review` runs in the foreground: the handler builds a directive and injects it **hidden** into the main agent. The main agent obtains the diff once, then runs **one** `subagent({ workflowScript, async:false })` call that fans out **lean** reviewers and runs the inline gate:
+`/review` runs in the foreground. The extension prepares the run, then:
 
 ```text
-Step 1  obtain → .pi/pi-review/change.diff + changed-files.txt + change-kind.txt
+Step 0  extension: resolve target → acquire diff + manifest → prepare target workspace
+Step 1  main agent verifies the prepared manifest/workspace (one bash call)
 Step 2  subagent({ workflowScript, async:false }) — once
-          runs.all([ pi-review.* reviewers … ]) → runs.run("gate", { inline findings })
-Step 3  report from the workflow return value (do not re-read the diff)
+          runs.all([ pi-review.* reviewers … ]) → runs.run("gate", { structuredOutput })
+Step 3  pi_review_report tool → code-side verdict + persisted session entry + markdown
 ```
 
-**Permissions:** on each `/review`, CC-aligned allow rules (7× `gh` + read-only `git` + Read/Grep) are merged into `.pi/projects/<id>/permissions.local.json` so headless reviewers are not blocked by permission-modes (no ask UI in children).
+Every reviewer and the gate carry `outputSchema`; the workflow consumes `result.structuredOutput` (never free-text). Reviewer findings include `status` (`ok`/`limited`/`skipped`) and `coverage`; the gate emits per-candidate `dispositions` (kept / dropped / merged) so high-severity candidates are never silently lost.
+
+**Permissions:** the extension performs diff/clone/fetch via its own subprocesses. It **no longer writes** `.pi/projects/<id>/permissions.local.json`. Reviewer children rely on their `tools:` allowlist (read/grep and a few read-only git commands) — no persistent project permission mutation.
 
 **Cost:** dominated by N × tool turns. Prefer `--lite` for a cheap pass. Reviewer thinking **inherits** the parent session; only the gate uses `config.gate.thinking`.
 
@@ -111,10 +115,15 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
     "enabled": true,
     // Issues with confidence < threshold are dropped (code-enforced).
     "threshold": 8,
-    // Per-issue scorers: "off" (default) | "blocker-major" | "all"
-    "scorePerIssue": "off"
+    // Verdict policy: "strict" (any surviving blocker/major → request_changes)
+    // | "legacy" (≥3 majors). Code-side enforced.
+    "verdictPolicy": "strict"
   },
-  "concurrency": 4,
+  "routing": {
+    // "adaptive" (default) drops clearly-inapplicable lanes (no rule files,
+    // docs-only, no git history) before spawning. "all" keeps the full roster.
+    "mode": "adaptive"
+  },
   "budgets": {
     "turnBudget": { "maxTurns": 20, "graceTurns": 2 }
   },
@@ -127,22 +136,18 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
     "bugbot": {
       "model": "inherit",
       "thinking": "medium"
-      // tools inherit from inheritance.toolsDefault
     }
-  },
-  "inheritance": {
-    "toolsDefault": ["read", "grep", "find", "ls", "bash"],
-    "inheritProjectContext": false,
-    "inheritSkills": false
   }
 }
 ```
 
-Use `"model": "inherit"` on a reviewer to follow the parent session's model. The gate defaults to a cheap tier; override it persistently via `gate.model` in config, or per-run with `--gate-model <id>` (the directive injects it into the gate subagent).
+Use `"model": "inherit"` on a reviewer to follow the parent session's model; per-reviewer `thinking` is passed through to the child subagent. The gate defaults to a cheap tier; override it persistently via `gate.model`, or per-run with `--gate-model <id>`.
+
+**Legacy keys** (`concurrency`, `inheritance`, `gate.scorePerIssue`, `reviewers.<id>.tools`, `reviewers.<id>.timeoutMs`) are ignored — `/review` prints one migration warning when present. Remove them from your config to silence the warning.
 
 ## TUI output
 
-The main agent writes the report directly into chat. Shape (illustrative):
+The `pi_review_report` tool renders deterministic markdown into chat and persists a machine-readable session entry. A collapsible TUI renderer shows a verdict + count preview line; `/review-show` re-renders the most recent report. Shape (illustrative):
 
 ```text
 ## pi-review — uncommitted changes
@@ -197,17 +202,20 @@ bun test          # node:test + tsx
 ## Repo structure
 
 ```text
-index.ts                  Pi extension entry; registers /review + /review-config + /review-agents
-src/types.ts              Shared interfaces (Issue, ReviewerSpec, PiReviewConfig, ReviewReport)
+index.ts                  Pi extension entry; registers /review + /review-config + /review-agents + /review-show
+src/review-run.ts         Plugin-side run prep: diff acquisition, manifest, directive (active path)
+src/target-workspace.ts   PR target checkout (workspace for reviewers)
+src/review-report.ts      Manifest + diff helpers (SHA-256, changed-files, rule paths, prune)
+src/directive.ts          Directive + workflowScript generator (outputSchema, single-wave)
+src/workflow-schemas.ts   JSON Schema for reviewer / gate structured output
+src/report-tool.ts        pi_review_report implementation (code-side enforce + render)
+src/tool-wrapper.ts       Register the report tool
+src/tui-renderer.ts       Collapsible TUI renderer for "pi-review" cards
+src/report.ts             buildReportFromWorkflow + renderReport
+src/gate-enforce.ts       Dedupe + threshold + strict/legacy verdict (deterministic)
+src/types.ts              Shared interfaces
 src/config.ts             loadConfig / mergeWithDefaults / validateConfig / writeConfig
-src/args.ts               buildReviewerArgs / buildGateArgs / applyThinkingSuffix
-src/spawn.ts              runSubagent (child_process.spawn + structured-output read)
-src/schema.ts             TypeBox schemas for reviewer + gate outputs
-src/parallel.ts           mapConcurrent (hard cap 4)
-src/review.ts             runReviewers — fan-out + per-reviewer spawn
-src/gate.ts               runGate — single spawn with aggregated prompt
-src/git-input.ts          resolveDefaultDiff (status / vs default branch)
-src/report.ts             buildReport + renderReport
+src/schema.ts             TypeBox schemas (legacy spawn path)
 agents/*.md               Bundled reviewer prompts (incl. lite-review.md for --lite)
 prompts/gate.md           Gate subagent prompt
 tests/*.test.ts           node:test suites
@@ -215,9 +223,9 @@ tests/*.test.ts           node:test suites
 
 ## Limitations (v1)
 
-- No retry: a failed reviewer is recorded as `ok=false` and the rest of the run continues. The gate still runs.
-- No worktree isolation: all reviewers share the parent's cwd.
-- GitHub: agents use `gh`/`git` to obtain PRs; oversized diffs fall back to git. PR comments are not posted.
+- No automatic retry: a failed reviewer is recorded as `ok=false` and the rest of the run continues. The gate still runs.
+- The prepared target workspace (for PRs) is ephemeral under `.pi/pi-review/runs/` and pruned by TTL; it is not a full worktree with build state.
+- GitHub: the extension uses `gh`/`git` to obtain PRs; oversized diffs fall back to git. PR comments are not posted.
 - No web config UI: only `$EDITOR`.
 
 ## License

@@ -4,6 +4,37 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-08-16
+
+### Added
+- **Deterministic target workspace prep:** `/review` now clones/checks out the target repo (PR) or uses the user's cwd (local) and writes `.pi/pi-review/runs/<runId>/manifest.json` + `change.diff` before handing the directive to the main agent. Cross-repo PRs (e.g. reviewing `CherryHQ/cherry-studio` from the plugin's cwd) now point `history-context` / `code-comments` at the **target** workspace instead of the plugin repo.
+- **`pi_review_report` tool:** renders the final report deterministically (dedupe → threshold → code-side verdict) from the workflow return value, persists a session entry, and is the only authoritative report source.
+- **`/review-show`:** re-renders the most recent `pi-review` session entry.
+- **Collapsible TUI renderer**: `registerMessageRenderer("pi-review")` collapses long reports into a verdict + count preview line.
+- **Dispositions:** the gate now records per-candidate keep/drop/merge audits (`src/types.ts GateDisposition` + `agents/gate.md`).
+
+### Changed
+- **`chatProgress` fixed:** the directive emits `chatProgress: "auto"` (was an invalid `"milestones"` value rejected by pi-subagents).
+- **Structured output hard requirement:** every reviewer and gate child carries `outputSchema`; the workflowScript consumes `result.structuredOutput`, never free-text `result.output`. Reviewers return `status` (`ok | limited | skipped`) and `coverage`.
+- **Model inheritance preserved:** `model: "inherit"` reviewers no longer get a concrete per-child `model` clause injected (fixes silent inheritance loss).
+- **Strict verdict default:** `enforceGateOutput` uses `strict` policy — any surviving blocker/major → `request_changes` (was `≥3 majors`). Legacy policy available via `verdictPolicy: "legacy"`.
+- **Gate prompt:** re-scores every candidate, emits `dispositions`, and no longer consumes Markdown fenced JSON.
+- **Diff acquisition moved into the plugin:** `src/review-run.ts` fetches `gh pr view` / `gh pr diff` / git fallback, records base/head SHAs, diff SHA-256, changed files (derived from the diff only), rule paths, docs-only flag.
+
+### Removed
+- `/review` no longer auto-writes `.pi/projects/<id>/permissions.local.json`; diff/clone/fetch happens via the extension's own subprocesses.
+- **Legacy spawn pipeline deleted:** `src/spawn.ts`, `src/gate.ts`, `src/review.ts`, `src/issue-score.ts`, `src/args.ts`, `src/obtain-diff.ts`, `src/prep.ts`, `src/git-input.ts`, `src/eligibility.ts`, `src/paths.ts`, `src/structured-output-capture.ts`, `src/parallel.ts`, `src/schema.ts`, `src/run.ts`, `scripts/smoke-acceptance.ts`, `prompts/gate.md`, and their tests. The foreground workflowScript path is the only supported execution path.
+- **Config knobs that could not be honored removed:** `concurrency`, `inheritance`, `gate.scorePerIssue`, `reviewers.<id>.tools`, `reviewers.<id>.timeoutMs`. Legacy keys still parse (with one migration warning) but no longer affect behavior.
+
+### Added
+- `routing.mode` (`adaptive` | `all`): drops clearly-inapplicable reviewer lanes up front (no rule files / docs-only / no git history). Skipped lanes appear in the report.
+- `gate.verdictPolicy` (`strict` | `legacy`): code-side verdict rule selection.
+
+### Migration
+- Config `schemaVersion` stays 1; old configs continue to load.
+
+[0.7.0]: https://github.com/GeorgeDong32/pi-review/compare/v0.6.2...v0.7.0
+
 ## [0.6.1] - 2026-08-08
 
 ### Fixed
