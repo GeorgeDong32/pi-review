@@ -1,30 +1,40 @@
 /**
  * @georgedong32/pi-review — fan-out code review for Pi.
  *
- * Pipeline: eligibility → prep → parallel reviewers → gate → report.
- * See reference/pi-review-roadmap.md and reference/v0.2-plan.md.
+ * v0.7 pipeline:
+ *   1. `/review` resolves the target, prepares the diff + target repo
+ *      checkout, and writes `.pi/pi-review/runs/<runId>/manifest.json`.
+ *   2. The hidden directive tells the main agent to call `subagent({...})`
+ *      exactly once with a generated workflowScript. The script fans out
+ *      reviewers via `runs.all([...])` and feeds their `structuredOutput`
+ *      objects into `runs.run("gate")`. Every child passes `cwd` and
+ *      `outputSchema`.
+ *   3. The main agent calls `pi_review_report` (a tool registered below)
+ *      with the workflow return value. The tool re-validates outputs,
+ *      enforces verdict in code, persists a session entry, and renders the
+ *      deterministic markdown.
+ *
+ * No project-level permission files are written — diff/clone/fetch happen
+ * via the extension's own `pi.exec`; reviewer children only need read/grep
+ * and a few read-only git commands, all already permitted in the agent
+ * frontmatter.
  */
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 import { parseReviewArgs } from "./src/cli-args.js";
-import { buildReviewDirective } from "./src/directive.js";
-import { checkEligibility } from "./src/eligibility.js";
-import { resolveReviewTarget } from "./src/git-input.js";
-import { resolveLeanBudgets } from "./src/lean-agents.js";
-import { extractPrRef } from "./src/pr-ref.js";
-import { ensureReviewPermissions } from "./src/review-permissions.js";
-import { liteReviewer, resolveReviewers } from "./src/run.js";
 import {
-	configPath,
 	DEFAULT_CONFIG,
+	configPath,
 	loadConfig,
 	mergeWithDefaults,
 	resolveModel,
 	validateConfig,
 	writeConfig,
 } from "./src/config.js";
-import type { ReviewTarget } from "./src/types.js";
+import { prepareRun } from "./src/review-run.js";
+import { registerReviewReportTool } from "./src/tool-wrapper.js";
+import { registerPiReviewRenderer } from "./src/tui-renderer.js";
 
 function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 	const m = ctx.model;
@@ -33,6 +43,8 @@ function parentModelId(ctx: ExtensionCommandContext): string | undefined {
 }
 
 export default function (pi: ExtensionAPI) {
+	registerReviewReportTool(pi);
+	registerPiReviewRenderer(pi);
 	pi.registerCommand("review", {
 		description: "Foreground code review (lean pi-review.* agents). --lite = single-agent.",
 		getArgumentCompletions: (prefix: string) => {
@@ -55,85 +67,35 @@ export default function (pi: ExtensionAPI) {
 
 			try {
 				const parsed = parseReviewArgs(args);
-				const { config } = loadConfig();
-				const parentModel = parentModelId(ctx);
+				const { config, legacyWarnings } = loadConfig();
+				for (const w of legacyWarnings) notify(`pi-review: ${w}`, "warning");
 
-				let target: ReviewTarget | null = null;
-				try {
-					target = await resolveReviewTarget(ctx.cwd, { input: parsed.input });
-				} catch (err) {
-					notify(err instanceof Error ? err.message : String(err), "warning");
-					return;
-				}
-				if (!target) {
-					notify("Not in a git repo and no PR/url given — nothing to review.", "info");
-					return;
-				}
-
-				const eligibility = checkEligibility({
-					target,
-					hasExplicitInput: Boolean(parsed.input && extractPrRef(parsed.input)),
-					isGitRepo: true,
-					probedDiff: null,
-				});
-				if (!eligibility.eligible) {
-					notify(eligibility.reason, "info");
-					return;
-				}
-
-				const reviewers = parsed.lite
-					? [liteReviewer(parentModel)]
-					: resolveReviewers(config, [], parentModel);
-				if (reviewers.length === 0) {
-					notify("No enabled reviewers. Edit config via /review-config.", "warning");
-					return;
-				}
-				const gateModel = resolveModel(parsed.gateModel ?? config.gate.model, parentModel);
-				const budgets = resolveLeanBudgets(config.budgets);
-
-				// Merge CC-aligned allow rules so headless reviewers are not blocked.
-				try {
-					const perm = ensureReviewPermissions(ctx.cwd);
-					if (perm.added.length > 0) {
-						notify(`pi-review: added ${perm.added.length} permission allow rule(s) for review tools.`, "info");
-					}
-				} catch (err) {
-					notify(
-						`pi-review: could not update permissions.local.json (${err instanceof Error ? err.message : String(err)})`,
-						"warning",
-					);
-				}
-
-				const directive = buildReviewDirective({
-					target,
-					reviewers,
-					gateModel,
-					gateThinking: config.gate.thinking,
-					threshold: config.gate.threshold,
-					lite: parsed.lite,
-					cwd: ctx.cwd,
-					budgets,
-				});
-
-				// Dry-run: show the directive instead of injecting it.
+				// Dry-run: print the prepared run summary without injecting the directive.
 				if (parsed.noSpawn) {
-					pi.sendMessage({ customType: "pi-review", content: directive, display: true });
+					const dryRunText = await renderDryRun(ctx, parsed, config);
+					pi.sendMessage({ customType: "pi-review", content: dryRunText, display: true });
 					return;
 				}
 
-				// a) Visible echo of the user's command. Extension commands don't
-				//    otherwise appear in chat, so surface it as a one-liner. This
-				//    does NOT trigger a turn — it just shows `/review <prompt>`.
+				const prepared = await prepareRun({ cwd: ctx.cwd, input: parsed.input, lite: parsed.lite, gateModel: parsed.gateModel });
+				if (!prepared) {
+					notify("Nothing to review (no PR/url/diff and not a git repo).", "info");
+					return;
+				}
+
+				// Visible echo of the command.
 				pi.sendMessage({
 					customType: "pi-review",
 					content: parsed.input ? `/review ${parsed.input}` : "/review",
 					display: true,
 				});
-				// b) Hidden directive — the main agent executes it as a user turn
-				//    (display:false hides the full text; triggerTurn starts it).
-				//    The main agent fans out reviewers via the `subagent` tool.
+				// Hidden directive → main agent executes as a turn.
 				pi.sendMessage(
-					{ customType: "pi-review-directive", content: directive, display: false },
+					{
+						customType: "pi-review-directive",
+						content: prepared.directiveText,
+						display: false,
+					},
 					{ triggerTurn: true },
 				);
 			} catch (err) {
@@ -197,17 +159,69 @@ export default function (pi: ExtensionAPI) {
 			const lines: string[] = ["## pi-review agents", ""];
 			for (const r of Object.values(config.reviewers)) {
 				const model = resolveModel(r.model, parent);
-				const tools = (r.tools ?? config.inheritance.toolsDefault).join(", ");
 				const status = r.enabled ? "enabled" : "disabled";
 				lines.push(`- **${r.id}** (${r.label}) — ${status}`);
 				lines.push(`  - model: ${model}`);
 				lines.push(`  - thinking: ${r.thinking ?? "default"}`);
-				lines.push(`  - tools: ${tools}`);
 			}
 			lines.push("");
-			lines.push(`Gate: ${resolveModel(config.gate.model, parent)} · threshold ${config.gate.threshold}`);
+			lines.push(`Gate: ${resolveModel(config.gate.model, parent)} · threshold ${config.gate.threshold} · policy ${config.gate.verdictPolicy}`);
+			lines.push(`Routing: ${config.routing.mode}`);
 			const body = lines.join("\n");
 			pi.sendMessage({ customType: "pi-review-agents", content: body, display: true });
 		},
 	});
+
+	pi.registerCommand("review-show", {
+		description: "Re-render the most recent pi-review session entry",
+		handler: async (_args, ctx) => {
+			let last: { markdown?: string } | null = null;
+			for (const entry of ctx.sessionManager.getBranch()) {
+				if (
+					entry.type === "custom" &&
+					(entry as { customType?: string }).customType === "pi-review" &&
+					(entry as { data?: { markdown?: string } }).data?.markdown
+				) {
+					last = (entry as { data: { markdown?: string } }).data;
+				}
+			}
+			if (!last?.markdown) {
+				ctx.ui.notify("No pi-review report found in this session.", "info");
+				return;
+			}
+			pi.sendMessage({ customType: "pi-review", content: last.markdown, display: true });
+		},
+	});
+}
+
+/** Cheap human summary for `--no-spawn`. */
+async function renderDryRun(
+	ctx: ExtensionCommandContext,
+	parsed: ReturnType<typeof parseReviewArgs>,
+	config: ReturnType<typeof loadConfig>["config"],
+): Promise<string> {
+	const prepared = await prepareRun({
+			cwd: ctx.cwd,
+			input: parsed.input,
+			lite: parsed.lite,
+			gateModel: parsed.gateModel,
+		});
+	if (!prepared) return "pi-review dry run: nothing to review.";
+	const m = prepared.manifest;
+	const gate = config.gate;
+	const lines = [
+		"pi-review dry run",
+		`input: ${m.targetLabel}`,
+		`mode: ${parsed.lite ? "lite (single agent, no gate)" : `agent-fetch (${m.targetKind})`}`,
+		`runId: ${m.runId}`,
+		`workspace: ${m.workspacePath}`,
+		`diff sha256: ${m.diffSha256.slice(0, 16)}…`,
+		`changed files: ${m.changedFiles.length}`,
+		`docsOnly: ${m.docsOnly}`,
+		`historyAvailable: ${m.historyAvailable}`,
+		`threshold: ${gate.threshold}`,
+		`gate: ${gate.enabled ? `yes (${resolveModel(gate.model, undefined)})` : "no"}`,
+	];
+	if (m.rulePaths.length > 0) lines.push(`rules: ${m.rulePaths.join(", ")}`);
+	return lines.join("\n");
 }

@@ -1,134 +1,354 @@
 /**
- * Build and render the final ReviewReport as a markdown block.
- *
- * Rendered as a single `assistant` text block via ctx.sendMessage so it
- * appears natively in every pi mode (TUI, RPC, print). The same data is
- * also written via pi.appendEntry("custom", ...) so a future TUI renderer
- * can collapse sections without re-running the review.
+ * Deterministic report builder for v0.7. The `pi_review_report` tool feeds
+ * the workflow return value + manifest into `buildReportFromWorkflow`; the
+ * output is then rendered to markdown and persisted via `pi.appendEntry`.
  */
 import type {
+	GateDisposition,
 	GateRunResult,
+	Issue,
 	IssueSeverity,
 	ReviewReport,
 	ReviewerRunResult,
 	Verdict,
 } from "./types.js";
 
-const EMPTY_SEVERITY_TOTALS: Record<IssueSeverity, number> = {
+const EMPTY_SEVERITY: Record<IssueSeverity, number> = {
 	blocker: 0,
 	major: 0,
 	minor: 0,
 	nit: 0,
 };
 
-/** Aggregate a list of ReviewerRunResults + optional GateRunResult into a report. */
-export function buildReport(input: {
-	startedAt: number;
-	reviewers: ReviewerRunResult[];
-	gate: GateRunResult | null;
-	input: ReviewReport["input"];
-	prep?: ReviewReport["prep"];
-}): ReviewReport {
-	const reviewers = input.reviewers;
-	const gate = input.gate;
-	const durationMs = Date.now() - input.startedAt;
-	const totals = computeTotals(reviewers, gate);
-	let verdict: Verdict | "no-gate" | "error";
-	if (reviewers.length > 0 && reviewers.every((r) => !r.ok)) {
-		verdict = "error";
-	} else if (!gate || !gate.ok) {
-		verdict = "no-gate";
-	} else {
-		verdict = gate.verdict?.verdict ?? "no-gate";
+export interface ReviewerWorkflowResult {
+	key: string;
+	ok: boolean;
+	error?: string;
+	output?: string;
+	structuredOutput?: unknown;
+}
+
+export interface WorkflowReturnValue {
+	reviewers?: ReviewerWorkflowResult[];
+	gate?: { ok: boolean; error?: string; output?: string; structuredOutput?: unknown } | null;
+}
+
+/** Strip and normalize a reviewer structuredOutput (or fall back to limited). */
+export function coerceReviewerOutput(r: ReviewerWorkflowResult): {
+	status: "ok" | "limited" | "skipped" | "failed";
+	issues: Issue[];
+	summary: string;
+	coverage: { filesChecked: string[]; commandsRun: string[]; limitations: string[] };
+} {
+	if (!r.ok) {
+		return {
+			status: "failed",
+			issues: [],
+			summary: r.error ?? "reviewer failed",
+			coverage: { filesChecked: [], commandsRun: [], limitations: [r.error ?? "reviewer failed"] },
+		};
 	}
+	const so = r.structuredOutput;
+	if (!so || typeof so !== "object") {
+		return {
+			status: "limited",
+			issues: [],
+			summary: "no structuredOutput",
+			coverage: { filesChecked: [], commandsRun: [], limitations: ["no structuredOutput"] },
+		};
+	}
+	const obj = so as {
+		status?: string;
+		issues?: Issue[];
+		summary?: string;
+		coverage?: { filesChecked?: string[]; commandsRun?: string[]; limitations?: string[] };
+	};
+	const status = obj.status === "ok" || obj.status === "limited" || obj.status === "skipped"
+		? obj.status
+		: "limited";
 	return {
-		startedAt: input.startedAt,
-		durationMs,
-		input: input.input,
-		prep: input.prep,
-		reviewers,
-		gate,
-		totals,
-		verdict,
+		status,
+		issues: Array.isArray(obj.issues) ? obj.issues : [],
+		summary: typeof obj.summary === "string" ? obj.summary : "",
+		coverage: {
+			filesChecked: Array.isArray(obj.coverage?.filesChecked) ? obj.coverage!.filesChecked : [],
+			commandsRun: Array.isArray(obj.coverage?.commandsRun) ? obj.coverage!.commandsRun : [],
+			limitations: Array.isArray(obj.coverage?.limitations) ? obj.coverage!.limitations : [],
+		},
 	};
 }
 
-function computeTotals(reviewers: ReviewerRunResult[], gate: GateRunResult | null): ReviewReport["totals"] {
-	const bySeverity = { ...EMPTY_SEVERITY_TOTALS };
-	let issues = 0;
-	// Prefer gate's deduped issue set when present, otherwise sum reviewer outputs.
-	const source = gate?.ok && gate.verdict ? gate.verdict.issues : reviewers.flatMap((r) => r.output?.issues ?? []);
-	for (const issue of source) {
-		bySeverity[issue.severity]++;
-		issues++;
+export function coerceGateOutput(gate: WorkflowReturnValue["gate"]): {
+	status: "ok" | "limited" | "skipped" | "failed";
+	verdict?: Verdict;
+	issues: Issue[];
+	dispositions: GateDisposition[];
+	reason: string;
+} {
+	if (!gate || !gate.ok) {
+		return {
+			status: "failed",
+			issues: [],
+			dispositions: [],
+			reason: gate?.error ?? "gate failed",
+		};
 	}
-	return { issues, bySeverity };
+	const so = gate.structuredOutput;
+	if (!so || typeof so !== "object") {
+		return {
+			status: "limited",
+			issues: [],
+			dispositions: [],
+			reason: "gate did not return structuredOutput",
+		};
+	}
+	const obj = so as {
+		status?: string;
+		verdict?: Verdict;
+		issues?: Issue[];
+		dispositions?: GateDisposition[];
+		reason?: string;
+	};
+	return {
+		status: obj.status === "ok" || obj.status === "limited" || obj.status === "skipped" ? obj.status : "ok",
+		verdict: obj.verdict,
+		issues: Array.isArray(obj.issues) ? obj.issues : [],
+		dispositions: Array.isArray(obj.dispositions) ? obj.dispositions : [],
+		reason: typeof obj.reason === "string" ? obj.reason : "",
+	};
 }
 
-/** Render the full report as a single markdown string. */
-export function renderReport(report: ReviewReport): string {
+/** Build a normalized reviewer row for the report, regardless of input shape. */
+export function reviewerRow(
+	id: string,
+	label: string,
+	res: ReviewerWorkflowResult,
+	durationMs: number,
+): ReviewerRunResult {
+	const coerced = coerceReviewerOutput(res);
+	return {
+		id,
+		label,
+		model: "(see workflow)",
+		ok: res.ok,
+		output: {
+			status: coerced.status,
+			issues: coerced.issues,
+			summary: coerced.summary,
+			coverage: coerced.coverage,
+		},
+		error: res.error,
+		durationMs,
+	};
+}
+
+/** Compute totals for the verdict line. */
+export function computeTotals(issues: Issue[]): {
+	issues: number;
+	bySeverity: Record<IssueSeverity, number>;
+} {
+	const bySeverity = { ...EMPTY_SEVERITY };
+	for (const i of issues) bySeverity[i.severity]++;
+	return { issues: issues.length, bySeverity };
+}
+
+/** Decide the report verdict. */
+export function reportVerdict(
+	reviewers: ReviewerWorkflowResult[],
+	gate: { ok: boolean; structuredOutput?: unknown; error?: string } | null | undefined,
+	enforcedVerdict?: Verdict,
+): Verdict | "no-gate" | "error" | "partial" {
+	const ok = reviewers.some((r) => r.ok);
+	if (reviewers.length > 0 && reviewers.every((r) => !r.ok)) return "error";
+	if (!gate || !gate.ok) return "no-gate";
+	const so = gate.structuredOutput as { status?: string } | null;
+	if (so?.status && so.status !== "ok") return "partial";
+	return enforcedVerdict ?? "comment";
+}
+
+export type ReportVerdictKind = Verdict | "no-gate" | "error" | "partial";
+
+export interface ReportInput {
+	startedAt: number;
+	manifest: {
+		runId: string;
+		targetLabel: string;
+		targetKind: string;
+		prRef?: string;
+		diffSha256: string;
+		workspacePath: string;
+		docsOnly: boolean;
+		rulePaths: string[];
+		historyAvailable: boolean;
+		changedFiles: string[];
+		baseSha?: string;
+		headSha?: string;
+		skippedReviewers?: Array<{ id: string; reason: string }>;
+	};
+	workflowReturn: WorkflowReturnValue;
+	threshold: number;
+	policy: "strict" | "legacy";
+	enforcedVerdict: Verdict;
+	enforcedIssues: Issue[];
+	enforcedDispositions: GateDisposition[];
+	enforcedReason: string;
+}
+
+export interface BuiltReport extends Omit<ReviewReport, "verdict"> {
+	manifest: ReportInput["manifest"];
+	dispositions: GateDisposition[];
+	reviewerStatus: Array<{ id: string; status: string; limitations: string[] }>;
+	gateStatus: "ok" | "limited" | "skipped" | "failed";
+	verdict: Verdict | "no-gate" | "error" | "partial";
+}
+
+export function buildReportFromWorkflow(input: ReportInput): BuiltReport {
+	const durationMs = Date.now() - input.startedAt;
+	const reviewerResults = (input.workflowReturn.reviewers ?? []).map((r) =>
+		reviewerRow(r.key, r.key, r, 0),
+	);
+	const reviewerStatus = (input.workflowReturn.reviewers ?? []).map((r) => {
+		const c = coerceReviewerOutput(r);
+		return { id: r.key, status: c.status, limitations: c.coverage.limitations };
+	});
+	const gateRaw = input.workflowReturn.gate ?? null;
+	const coercedGate = coerceGateOutput(gateRaw);
+	const gateResult: GateRunResult = {
+		ok: !!gateRaw?.ok,
+		verdict: {
+			verdict: input.enforcedVerdict,
+			issues: input.enforcedIssues,
+			dispositions: input.enforcedDispositions,
+			status: coercedGate.status,
+			reason: input.enforcedReason,
+		},
+		error: gateRaw?.error,
+		durationMs: 0,
+		model: "(see workflow)",
+	};
+	const totals = computeTotals(input.enforcedIssues);
+	const verdict = reportVerdict(input.workflowReturn.reviewers ?? [], gateRaw, input.enforcedVerdict);
+
+	return {
+		startedAt: input.startedAt,
+		durationMs,
+		input: {
+			kind: input.manifest.targetKind as ReviewReport["input"]["kind"],
+			label: input.manifest.targetLabel,
+			prRef: input.manifest.prRef,
+		},
+		reviewers: reviewerResults,
+		gate: gateResult,
+		totals,
+		verdict,
+		manifest: input.manifest,
+		dispositions: input.enforcedDispositions,
+		reviewerStatus,
+		gateStatus: coercedGate.status,
+	};
+}
+
+export function renderReport(report: BuiltReport): string {
 	const lines: string[] = [];
 	lines.push(`## pi-review — ${report.input.label}`);
 	lines.push("");
 	lines.push(renderVerdictLine(report));
 	lines.push(renderSummaryLine(report));
-	if (report.input.userContext?.trim()) {
-		lines.push("");
-		lines.push(`_Request: ${report.input.userContext.trim()}_`);
+	lines.push("");
+	lines.push(renderRunLine(report));
+	if (report.manifest.prRef) {
+		lines.push(`- PR: ${report.manifest.prRef}`);
 	}
-	if (report.prep) {
-		lines.push("");
-		lines.push(`_Rules: ${report.prep.rulePaths.join(", ") || "none"} · ${report.prep.summary}_`);
+	if (report.manifest.baseSha && report.manifest.headSha) {
+		lines.push(`- Base: ${report.manifest.baseSha.slice(0, 12)} · Head: ${report.manifest.headSha.slice(0, 12)}`);
+	}
+	lines.push(`- Diff SHA-256: ${report.manifest.diffSha256.slice(0, 16)}…`);
+	lines.push(`- Workspace: ${report.manifest.workspacePath}`);
+	lines.push(`- History available: ${report.manifest.historyAvailable ? "yes" : "no"}`);
+	lines.push(`- Docs-only: ${report.manifest.docsOnly ? "yes" : "no"}`);
+	if (report.manifest.rulePaths.length > 0) {
+		lines.push(`- Rule paths: ${report.manifest.rulePaths.join(", ")}`);
+	} else {
+		lines.push(`- Rule paths: (none)`);
 	}
 	lines.push("");
 
-	for (const r of report.reviewers) {
-		lines.push(renderReviewerSection(r));
+	if (report.manifest.skippedReviewers && report.manifest.skippedReviewers.length > 0) {
+		lines.push("### Skipped by adaptive routing");
+		for (const s of report.manifest.skippedReviewers) {
+			lines.push(`- ${s.id}: ${s.reason}`);
+		}
+		lines.push("");
+	}
+
+	if (report.reviewerStatus.length > 0) {
+		lines.push("### Reviewer coverage");
+		for (const s of report.reviewerStatus) {
+			const limit = s.limitations.length > 0 ? ` (${s.limitations.join("; ")})` : "";
+			lines.push(`- ${s.id}: ${s.status}${limit}`);
+		}
+		lines.push("");
+	}
+
+	if (report.reviewers.length > 0) {
+		lines.push("### Reviewer findings");
+		for (const r of report.reviewers) {
+			lines.push(renderReviewerSection(r));
+		}
 	}
 
 	if (report.gate) {
 		lines.push(renderGateSection(report.gate));
 	}
 
+	if (report.dispositions.length > 0) {
+		lines.push(renderDispositions(report.dispositions));
+	}
+
 	return lines.join("\n");
 }
 
-function renderVerdictLine(report: ReviewReport): string {
+function renderVerdictLine(report: BuiltReport): string {
 	const v = report.verdict;
-	const label = v === "no-gate" ? "NO GATE" : v === "error" ? "ERROR" : v.toUpperCase();
+	const label =
+		v === "no-gate"
+			? "NO GATE"
+			: v === "error"
+				? "ERROR"
+				: v === "partial"
+					? "PARTIAL"
+					: v.toUpperCase();
 	const t = report.totals.bySeverity;
-	const counts = `${t.blocker} blockers · ${t.major} major · ${t.minor} minor · ${t.nit} nit`;
-	const unfiltered =
-		(!report.gate || !report.gate.ok) && report.verdict !== "error"
-			? " · unfiltered reviewer totals"
-			: "";
-	return `**Verdict: ${label}** (${counts}${unfiltered})`;
+	return `**Verdict: ${label}** (${t.blocker} blocker · ${t.major} major · ${t.minor} minor · ${t.nit} nit)`;
 }
 
-function renderSummaryLine(report: ReviewReport): string {
+function renderSummaryLine(report: BuiltReport): string {
 	const dur = (report.durationMs / 1000).toFixed(1);
 	const reviewerCount = report.reviewers.length;
 	const gateCount = report.gate ? 1 : 0;
 	return `Reviewed in ${dur}s · ${reviewerCount} reviewer${reviewerCount === 1 ? "" : "s"} · ${gateCount} gate`;
 }
 
-function renderReviewerSection(r: ReviewerRunResult): string {
+function renderRunLine(report: BuiltReport): string {
+	return `- Run: ${report.manifest.runId}`;
+}
+
+export function renderReviewerSection(r: ReviewerRunResult): string {
 	const status = r.ok ? "ok" : "failed";
-	const model = r.model;
 	const dur = (r.durationMs / 1000).toFixed(1);
-	const head = `### ${r.id} (${model}) — ${status} · ${dur}s`;
+	const head = `#### ${r.id} — ${status} · ${dur}s`;
 	if (!r.ok) {
-		const errMsg = r.error ?? "unknown error";
-		const exit = r.exitCode !== undefined ? ` (exit ${r.exitCode})` : "";
-		return [head, "", `- ${errMsg}${exit}`, ""].join("\n");
+		return [head, "", `- ${r.error ?? "unknown error"}`, ""].join("\n");
 	}
 	const issues = r.output?.issues ?? [];
 	const summary = r.output?.summary ?? "";
-	const body: string[] = [head, "", `- ${issues.length} issue${issues.length === 1 ? "" : "s"}`];
+	const body: string[] = [head, "", `- ${r.output?.status ?? "ok"} · ${issues.length} issue${issues.length === 1 ? "" : "s"}`];
 	if (summary) body.push(`- ${summary}`);
 	for (const issue of issues) {
 		const loc = issue.line !== undefined ? `${issue.file}:${issue.line}` : issue.file;
-		body.push(`- [${issue.severity.toUpperCase()} · ${issue.category} · conf ${issue.confidence}] \`${loc}\` — ${issue.evidence}`);
+		body.push(
+			`- [${issue.severity.toUpperCase()} · ${issue.category} · conf ${issue.confidence}] \`${loc}\` — ${issue.evidence}`,
+		);
 	}
 	body.push("");
 	return body.join("\n");
@@ -136,30 +356,45 @@ function renderReviewerSection(r: ReviewerRunResult): string {
 
 function renderGateSection(g: GateRunResult): string {
 	if (!g.ok) {
-		const exit = g.exitCode !== undefined ? ` (exit ${g.exitCode})` : "";
-		return [`### gate (${g.model}) — failed · ${(g.durationMs / 1000).toFixed(1)}s`, "", `- ${g.error ?? "unknown error"}${exit}`, ""].join("\n");
+		return [`### gate — failed`, "", `- ${g.error ?? "unknown error"}`, ""].join("\n");
 	}
 	const v = g.verdict;
 	if (!v) {
-		return [`### gate (${g.model}) — ok · no verdict`, ""].join("\n");
+		return [`### gate — ok · no verdict`, ""].join("\n");
 	}
 	const issues = v.issues;
-	const noHighConfidence =
-		v.verdict === "approve" && issues.length === 0 && v.reason.toLowerCase().includes("no high-confidence");
-	const lines = [
-		`### gate (${g.model}) — ok · ${(g.durationMs / 1000).toFixed(1)}s`,
+	return [
+		`### gate — ${v.status} · ${(g.durationMs / 1000).toFixed(1)}s`,
 		"",
 		`- verdict: ${v.verdict}`,
 		`- reason: ${v.reason}`,
-		noHighConfidence
-			? "- no high-confidence issues after dedupe + threshold"
-			: `- ${issues.length} issue${issues.length === 1 ? "" : "s"} after dedupe + threshold`,
-	];
-	for (const issue of issues) {
-		const loc = issue.line !== undefined ? `${issue.file}:${issue.line}` : issue.file;
+		`- ${issues.length} issue${issues.length === 1 ? "" : "s"} after dedupe + threshold`,
+		"",
+	]
+		.concat(
+			issues.map((issue) => {
+				const loc = issue.line !== undefined ? `${issue.file}:${issue.line}` : issue.file;
+				return `- [${issue.severity.toUpperCase()} · ${issue.category} · conf ${issue.confidence}] \`${loc}\` — ${issue.evidence}`;
+			}),
+		)
+		.concat([""])
+		.join("\n");
+}
+
+function renderDispositions(dispositions: GateDisposition[]): string {
+	const lines: string[] = ["### High-severity dispositions", ""];
+	const sorted = [...dispositions].sort((a, b) => {
+		if (a.decision === b.decision) return b.originalConfidence - a.originalConfidence;
+		const order = { dropped: 0, merged: 1, kept: 2 } as const;
+		return order[a.decision] - order[b.decision];
+	});
+	for (const d of sorted.slice(0, 25)) {
 		lines.push(
-			`- [${issue.severity.toUpperCase()} · ${issue.category} · conf ${issue.confidence}] \`${loc}\` — ${issue.evidence}`,
+			`- ${d.decision.toUpperCase()} \`${d.fingerprint}\` · ${d.originalConfidence}→${d.finalConfidence} · ${d.reason}`,
 		);
+	}
+	if (dispositions.length > 25) {
+		lines.push(`- … ${dispositions.length - 25} more disposition entries`);
 	}
 	lines.push("");
 	return lines.join("\n");

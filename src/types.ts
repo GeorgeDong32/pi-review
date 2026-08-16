@@ -1,21 +1,16 @@
 /**
- * Shared type definitions for pi-review.
+ * Shared type definitions for pi-review (v0.7+).
  *
- * ReviewerSpec, Issue, and PiReviewConfig are the data backbone for
- * configuration, structured I/O between the parent and subagent processes,
- * and the final report shape.
+ * The active path is the foreground workflowScript:
+ *   /review → plugin prep (diff + target workspace + manifest)
+ *          → main agent runs one subagent({ workflowScript })
+ *          → pi_review_report tool renders the deterministic report
+ *
+ * No legacy spawn-pipeline types remain.
  */
 
-/** Final verdict produced by the gate subagent. */
+/** Final verdict produced by the code-side gate enforcement. */
 export type Verdict = "approve" | "request_changes" | "comment";
-
-/**
- * Optional Claude Phase 4 style per-issue scoring after the aggregating gate.
- * - off: gate LLM + code enforce only
- * - blocker-major: parallel scorers for blocker/major only (default)
- * - all: score every surviving candidate issue
- */
-export type ScorePerIssueMode = "off" | "blocker-major" | "all";
 
 /** Issue severity bucket. */
 export type IssueSeverity = "blocker" | "major" | "minor" | "nit";
@@ -37,18 +32,53 @@ export interface Issue {
 	file: string;
 	/** 1-indexed line in the file. Omit for findings that span ranges or are file-wide. */
 	line?: number;
+	/** Optional line in the **introduced** diff this finding maps to. */
+	relatedChangedLine?: number;
 	category: IssueCategory;
 	severity: IssueSeverity;
 	/** 1-10 confidence score (calibrated like Claude's code-review plugin). */
 	confidence: number;
 	/** Short evidence quote or paraphrase. Max 280 chars. */
 	evidence: string;
+	/** Stable id for cross-reviewer dedupe (file:line:category[:short-hash]). */
+	fingerprint?: string;
 }
+
+/** Per-reviewer status (separate from runtime `ok`/`failed`). */
+export type ReviewerStatus = "ok" | "limited" | "skipped" | "failed";
 
 /** Structured payload a reviewer subagent must produce. */
 export interface ReviewerOutput {
+	status: ReviewerStatus;
 	issues: Issue[];
 	summary: string;
+	coverage: {
+		filesChecked: string[];
+		commandsRun: string[];
+		limitations: string[];
+	};
+}
+
+/** Per-candidate disposition emitted by the gate for audit. */
+export interface GateDisposition {
+	fingerprint: string;
+	decision: "kept" | "dropped" | "merged";
+	originalConfidence: number;
+	finalConfidence: number;
+	sourceReviewers: string[];
+	reason: string;
+}
+
+/** Structured payload the gate subagent must produce. */
+export interface GateOutput {
+	status: ReviewerStatus;
+	verdict: Verdict;
+	issues: Issue[];
+	dispositions: GateDisposition[];
+	reason: string;
+	coverage: {
+		limitations: string[];
+	};
 }
 
 /** Definition of a single reviewer, loaded from config + bundled prompt. */
@@ -58,14 +88,13 @@ export interface ReviewerSpec {
 	enabled: boolean;
 	/** "inherit" resolves to the parent session model at run time. */
 	model: string | "inherit";
+	/** Optional per-reviewer thinking level ("off"|"low"|"medium"|"high"|...). */
 	thinking?: string;
-	tools?: string[];
 	/**
-	 * Optional override path (relative to the package) to the reviewer prompt
-	 * markdown. When omitted, the runner derives `agents/<id>.md` from `id`.
+	 * Optional absolute path override to the reviewer prompt markdown.
+	 * When omitted, the runner derives `agents/<id>.md` from `id`.
 	 */
 	promptPath?: string;
-	timeoutMs?: number;
 }
 
 /** Per-run outcome of a single reviewer subagent. */
@@ -82,11 +111,15 @@ export interface ReviewerRunResult {
 	durationMs: number;
 }
 
-/** Aggregated verdict produced by the gate subagent. */
+/** Aggregated verdict produced by the code-side gate enforcement. */
 export interface GateVerdict {
 	verdict: Verdict;
 	/** Deduped + threshold-filtered issues from the reviewer pool. */
 	issues: Issue[];
+	/** Per-candidate audit trail (kept / dropped / merged). */
+	dispositions: GateDisposition[];
+	/** Reviewer status reflecting coverage (e.g. "limited" if bugbot failed). */
+	status: ReviewerStatus;
 	/** One-sentence rationale, max 500 chars. */
 	reason: string;
 }
@@ -102,32 +135,31 @@ export interface GateRunResult {
 	model: string;
 }
 
-/** Top-level user-editable config. */
+/** Verdict policy used by the code-side gate enforcement. */
+export type VerdictPolicy = "strict" | "legacy";
+
+/** Adaptive routing controls whether obviously-inapplicable lanes are dropped up front. */
+export type RoutingMode = "adaptive" | "all";
+
+/** Top-level user-editable config (v0.7). */
 export interface PiReviewConfig {
 	schemaVersion: 1;
 	gate: {
 		/** "inherit" → parent session model at run time. */
 		model: string | "inherit";
 		thinking?: string;
-		/** When false, gate is always skipped (same as --no-gate). */
+		/** When false, gate is always skipped. */
 		enabled: boolean;
 		/** Default confidence floor for the gate (issues with confidence < threshold are dropped). */
 		threshold: number;
-		/**
-		 * Parallel per-issue confidence scorers after the gate LLM pass.
-		 * Default `blocker-major` — light Claude Phase 4 alignment.
-		 */
-		scorePerIssue: ScorePerIssueMode;
+		/** Verdict policy: strict (any blocker/major) | legacy (≥3 majors). */
+		verdictPolicy: VerdictPolicy;
 	};
-	/** Max reviewers running in parallel. Hard cap 4. */
-	concurrency: number;
+	/** Adaptive routing: drop clearly-inapplicable reviewer lanes up front. */
+	routing: {
+		mode: RoutingMode;
+	};
 	reviewers: Record<string, Omit<ReviewerSpec, "promptPath"> & { promptPath?: string }>;
-	inheritance: {
-		/** Default tool list when a reviewer does not specify one. */
-		toolsDefault: string[];
-		inheritProjectContext: boolean;
-		inheritSkills: boolean;
-	};
 	/**
 	 * Optional budgets for the foreground directive path (pi-subagents).
 	 * turnBudget.maxTurns defaults to 20 (cap 48).
@@ -138,8 +170,9 @@ export interface PiReviewConfig {
 }
 
 /**
- * What to review — agent-driven (v0.4). The plugin does **not** embed a full
- * diff; reviewers obtain the change themselves via gh/git/read.
+ * What to review — agent-driven (v0.4+). The plugin does **not** embed a full
+ * diff; the extension prepares the diff + target workspace, then reviewer
+ * children read it.
  */
 export type ReviewTargetKind = "pr" | "diff-file" | "local-git";
 
@@ -155,32 +188,8 @@ export interface ReviewTarget {
 	diffPath?: string;
 	/** Hint for local-git: dirty working tree vs base...HEAD. */
 	hint?: string;
-	/**
-	 * Optional short probe note for dry-run (e.g. gh too_large). Never a hard
-	 * failure — agents still fetch.
-	 */
+	/** Optional short probe note for dry-run. */
 	probeNote?: string;
-}
-
-/** @deprecated Use ReviewTarget. Kept for tests that still synthesize local diffs. */
-export type InputSource =
-	| { kind: "path"; path: string }
-	| { kind: "pr"; ref: string }
-	| { kind: "uncommitted" }
-	| { kind: "vs-default-branch"; base: string };
-
-/** @deprecated Prefer ReviewTarget; used only by resolveDefaultDiff probes. */
-export interface ResolvedInput {
-	content: string;
-	source: InputSource;
-	label: string;
-	userContext?: string;
-}
-
-/** Prep metadata attached to a run (Claude steps 2–3). */
-export interface PrepMetadata {
-	rulePaths: string[];
-	summary: string;
 }
 
 /** Top-level run report. */
@@ -188,12 +197,11 @@ export interface ReviewReport {
 	startedAt: number;
 	durationMs: number;
 	input: ReviewTarget;
-	prep?: PrepMetadata;
 	reviewers: ReviewerRunResult[];
 	gate: GateRunResult | null;
 	totals: {
 		issues: number;
 		bySeverity: Record<IssueSeverity, number>;
 	};
-	verdict: Verdict | "no-gate" | "error";
+	verdict: Verdict | "no-gate" | "error" | "partial";
 }

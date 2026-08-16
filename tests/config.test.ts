@@ -1,8 +1,6 @@
 /**
- * Tests for src/config.ts: defaults, merge, validation, atomic write.
- *
- * Spawn-related calls are not exercised here — those live in tests/review.test.ts
- * and tests/gate.test.ts.
+ * Tests for src/config.ts (v0.7): defaults, merge, validation, atomic write,
+ * legacy-key migration warnings.
  */
 import { strict as assert } from "node:assert";
 import { afterEach, beforeEach, describe, test } from "node:test";
@@ -13,12 +11,14 @@ import { tmpdir } from "node:os";
 import {
 	DEFAULT_CONFIG,
 	DEFAULT_GATE_MODEL,
-	MAX_PARALLEL_CONCURRENCY,
 	clampThreshold,
 	configPath,
+	legacyConfigWarnings,
 	loadConfig,
 	loadRawConfig,
 	mergeWithDefaults,
+	parseRoutingMode,
+	parseVerdictPolicy,
 	resolveModel,
 	setConfigPath,
 	validateConfig,
@@ -29,8 +29,6 @@ let sandbox: string;
 
 beforeEach(() => {
 	sandbox = mkdtempSync(join(tmpdir(), "pi-review-config-"));
-	// Point configPath() at the sandbox so tests don't touch the real
-	// ~/.pi/agent/pi-review.json.
 	setConfigPath(join(sandbox, "pi-review.json"));
 });
 
@@ -45,8 +43,13 @@ describe("mergeWithDefaults", () => {
 		assert.equal(merged.schemaVersion, 1);
 		assert.equal(merged.gate.model, DEFAULT_GATE_MODEL);
 		assert.equal(merged.gate.threshold, 8);
-		assert.equal(merged.concurrency, 4);
+		assert.equal(merged.gate.verdictPolicy, "strict");
+		assert.equal(merged.routing.mode, "adaptive");
 		assert.equal(Object.keys(merged.reviewers).length, 6);
+		// Removed legacy knobs are absent.
+		assert.ok(!("concurrency" in merged));
+		assert.ok(!("inheritance" in merged));
+		assert.ok(!("scorePerIssue" in merged.gate));
 	});
 
 	test("returns DEFAULT_CONFIG when raw is null/non-object", () => {
@@ -58,24 +61,17 @@ describe("mergeWithDefaults", () => {
 
 	test("merges gate overrides on top of defaults", () => {
 		const merged = mergeWithDefaults({
-			gate: { model: "anthropic/claude-opus-4-6", thinking: "high", enabled: false, threshold: 7 },
+			gate: { model: "anthropic/claude-opus-4-6", thinking: "high", enabled: false, threshold: 7, verdictPolicy: "legacy" },
 		});
 		assert.equal(merged.gate.model, "anthropic/claude-opus-4-6");
 		assert.equal(merged.gate.thinking, "high");
 		assert.equal(merged.gate.enabled, false);
 		assert.equal(merged.gate.threshold, 7);
-		assert.equal(merged.gate.scorePerIssue, "off");
+		assert.equal(merged.gate.verdictPolicy, "legacy");
 	});
 
-	test("merges gate.scorePerIssue", () => {
-		const merged = mergeWithDefaults({ gate: { scorePerIssue: "off" } });
-		assert.equal(merged.gate.scorePerIssue, "off");
-	});
-
-	test("clamps concurrency to [1, MAX_PARALLEL_CONCURRENCY]", () => {
-		assert.equal(mergeWithDefaults({ concurrency: 0 }).concurrency, 1);
-		assert.equal(mergeWithDefaults({ concurrency: 99 }).concurrency, MAX_PARALLEL_CONCURRENCY);
-		assert.equal(mergeWithDefaults({ concurrency: 2.7 }).concurrency, 2);
+	test("merges routing.mode", () => {
+		assert.equal(mergeWithDefaults({ routing: { mode: "all" } }).routing.mode, "all");
 	});
 
 	test("clamps threshold to [0, 10]", () => {
@@ -101,12 +97,11 @@ describe("mergeWithDefaults", () => {
 	test("adds a brand-new reviewer", () => {
 		const merged = mergeWithDefaults({
 			reviewers: {
-				"custom-foo": { label: "Custom Foo", model: "anthropic/claude-haiku-4-5", tools: ["read"] },
+				"custom-foo": { label: "Custom Foo", model: "anthropic/claude-haiku-4-5" },
 			},
 		});
 		assert.ok(merged.reviewers["custom-foo"]);
 		assert.equal(merged.reviewers["custom-foo"].label, "Custom Foo");
-		// Built-in reviewers still present.
 		assert.equal(Object.keys(merged.reviewers).length, 7);
 	});
 
@@ -114,18 +109,33 @@ describe("mergeWithDefaults", () => {
 		const merged = mergeWithDefaults({
 			reviewers: { "claude-md-compliance": null, bugbot: "bad" },
 		});
-		// Built-in values kept when override is bad.
 		assert.equal(merged.reviewers["claude-md-compliance"].model, "inherit");
 		assert.equal(merged.reviewers.bugbot.model, "inherit");
 	});
 
-	test("merges inheritance block", () => {
+	test("ignores legacy per-reviewer tools / timeoutMs ", () => {
 		const merged = mergeWithDefaults({
-			inheritance: { toolsDefault: ["read", "bash"], inheritSkills: true },
+			reviewers: { bugbot: { tools: ["bash"], timeoutMs: 42 } },
 		});
-		assert.deepEqual(merged.inheritance.toolsDefault, ["read", "bash"]);
-		assert.equal(merged.inheritance.inheritSkills, true);
-		assert.equal(merged.inheritance.inheritProjectContext, false); // unchanged default
+		assert.ok(!("tools" in merged.reviewers.bugbot));
+		assert.ok(!("timeoutMs" in merged.reviewers.bugbot));
+	});
+});
+
+describe("legacyConfigWarnings", () => {
+	test("flags removed top-level keys", () => {
+		const warnings = legacyConfigWarnings({ concurrency: 4, inheritance: {}, gate: { scorePerIssue: "all" }, reviewers: { bugbot: { tools: ["bash"], timeoutMs: 9 } } });
+		const joined = warnings.join("\n");
+		assert.match(joined, /concurrency/);
+		assert.match(joined, /inheritance/);
+		assert.match(joined, /scorePerIssue/);
+		assert.match(joined, /tools/);
+		assert.match(joined, /timeoutMs/);
+	});
+
+	test("reports no warnings for a clean v0.7 config", () => {
+		assert.deepEqual(legacyConfigWarnings({}), []);
+		assert.deepEqual(legacyConfigWarnings(DEFAULT_CONFIG as unknown as Record<string, unknown>), []);
 	});
 });
 
@@ -139,6 +149,17 @@ describe("clampThreshold", () => {
 		assert.equal(clampThreshold(NaN), 8);
 		assert.equal(clampThreshold(-Infinity), 0);
 		assert.equal(clampThreshold(Infinity), 10);
+	});
+});
+
+describe("parseVerdictPolicy / parseRoutingMode", () => {
+	test("parses valid values and rejects bad ones", () => {
+		assert.equal(parseVerdictPolicy("strict"), "strict");
+		assert.equal(parseVerdictPolicy("legacy"), "legacy");
+		assert.equal(parseVerdictPolicy("whatever"), null);
+		assert.equal(parseRoutingMode("adaptive"), "adaptive");
+		assert.equal(parseRoutingMode("all"), "all");
+		assert.equal(parseRoutingMode("none"), null);
 	});
 });
 
@@ -161,18 +182,10 @@ describe("validateConfig", () => {
 	});
 
 	test("rejects empty model strings", () => {
-		const cfg = {
-			...DEFAULT_CONFIG,
-			gate: { ...DEFAULT_CONFIG.gate, model: "" },
-		};
+		const cfg = { ...DEFAULT_CONFIG, gate: { ...DEFAULT_CONFIG.gate, model: "" } };
 		const v = validateConfig(cfg);
 		assert.equal(v.ok, false);
 		assert.ok((v as { ok: false; errors: string[] }).errors.some((e) => e.includes("gate.model")));
-	});
-
-	test("rejects concurrency out of bounds", () => {
-		const v = validateConfig({ ...DEFAULT_CONFIG, concurrency: 99 });
-		assert.equal(v.ok, false);
 	});
 });
 
@@ -197,17 +210,15 @@ describe("loadRawConfig / loadConfig / writeConfig", () => {
 	});
 
 	test("loadConfig returns merged defaults when file missing", () => {
-		const { config, errors } = loadConfig();
+		const { config, errors, legacyWarnings } = loadConfig();
 		assert.deepEqual(errors, []);
+		assert.deepEqual(legacyWarnings, []);
 		assert.equal(config.gate.model, DEFAULT_GATE_MODEL);
 	});
 
 	test("writeConfig round-trips through loadConfig", () => {
-		const cfg = mergeWithDefaults({
-			gate: { model: "anthropic/claude-haiku-4-5", threshold: 5 },
-		});
+		const cfg = mergeWithDefaults({ gate: { model: "anthropic/claude-haiku-4-5", threshold: 5 } });
 		writeConfig(cfg);
-		// Confirm file lives where we expect.
 		assert.ok(configPath().startsWith(sandbox));
 		const reloaded = loadConfig();
 		assert.equal(reloaded.config.gate.model, "anthropic/claude-haiku-4-5");
@@ -218,18 +229,13 @@ describe("loadRawConfig / loadConfig / writeConfig", () => {
 		mkdirSync(dirname(configPath()), { recursive: true });
 		writeFileSync(configPath(), "{not json", "utf-8");
 		const { config, errors } = loadConfig();
-		assert.deepEqual(errors, []); // corrupt file = treat as empty, no errors
+		assert.deepEqual(errors, []);
 		assert.equal(config.gate.model, DEFAULT_GATE_MODEL);
 	});
 
 	test("loadConfig reports validation errors when override is structurally bad", () => {
 		mkdirSync(dirname(configPath()), { recursive: true });
-		// Wrong schemaVersion cannot be auto-corrected → validation must catch it.
-		writeFileSync(
-			configPath(),
-			JSON.stringify({ schemaVersion: 99 }),
-			"utf-8",
-		);
+		writeFileSync(configPath(), JSON.stringify({ schemaVersion: 99 }), "utf-8");
 		const { errors } = loadConfig();
 		assert.ok(errors.length > 0);
 		assert.ok(errors.some((e) => e.includes("schemaVersion")));
@@ -237,13 +243,17 @@ describe("loadRawConfig / loadConfig / writeConfig", () => {
 
 	test("loadConfig clamps out-of-range values silently", () => {
 		mkdirSync(dirname(configPath()), { recursive: true });
-		writeFileSync(
-			configPath(),
-			JSON.stringify({ gate: { threshold: 99 } }),
-			"utf-8",
-		);
+		writeFileSync(configPath(), JSON.stringify({ gate: { threshold: 99 } }), "utf-8");
 		const { config, errors } = loadConfig();
 		assert.deepEqual(errors, []);
 		assert.equal(config.gate.threshold, 10);
+	});
+
+	test("loadConfig surfaces legacy migration warnings", () => {
+		mkdirSync(dirname(configPath()), { recursive: true });
+		writeFileSync(configPath(), JSON.stringify({ concurrency: 2, gate: { scorePerIssue: "all" } }), "utf-8");
+		const { legacyWarnings, config } = loadConfig();
+		assert.ok(legacyWarnings.length > 0);
+		assert.equal(config.routing.mode, "adaptive");
 	});
 });

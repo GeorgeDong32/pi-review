@@ -1,16 +1,21 @@
 /**
- * Configuration loading, validation, and atomic persistence.
+ * Configuration loading, validation, and atomic persistence (v0.7).
  *
  * The user-editable config lives at:
  *   ~/.pi/agent/extensions/pi-review/config.json
  *
  * Pattern mirrors pi-subagents/src/extension/config.ts. We never touch the
  * top-level settings.json — that file is managed by pi itself.
+ *
+ * v0.7 removes configuration knobs that the foreground workflowScript path
+ * cannot honor (per-reviewer `tools`, `inheritance`, `gate.scorePerIssue`,
+ * top-level `concurrency`). Legacy keys are still read for migration
+ * warnings but no longer drive behavior.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { PiReviewConfig, ReviewerSpec, ScorePerIssueMode } from "./types.js";
+import type { PiReviewConfig, ReviewerSpec, RoutingMode, VerdictPolicy } from "./types.js";
 
 /**
  * Cheap model used by default for the gate (dedupe + re-score + verdict).
@@ -20,77 +25,61 @@ import type { PiReviewConfig, ReviewerSpec, ScorePerIssueMode } from "./types.js
  */
 export const DEFAULT_GATE_MODEL = "anthropic/claude-haiku-4-5";
 
-/** Default reviewer and gate config shipped with the package. */
+/** Default reviewer and gate config shipped with the package (v0.7). */
 export const DEFAULT_CONFIG: PiReviewConfig = {
 	schemaVersion: 1,
 	gate: {
-		// Cheap tier by default — the gate only dedupes + re-scores + verdicts,
-		// so cost matters more than raw strength. Reviewers stay on "inherit".
 		model: DEFAULT_GATE_MODEL,
 		thinking: "low",
 		enabled: true,
 		threshold: 8,
-		// Off by default — the gate's single re-score pass is enough (roadmap
-		// principle #5: "one cheap spawn"). Opt in via config for deep mode.
-		scorePerIssue: "off",
+		verdictPolicy: "strict",
 	},
-	concurrency: 4,
+	routing: {
+		mode: "adaptive",
+	},
 	reviewers: {
 		"claude-md-compliance": {
 			id: "claude-md-compliance",
 			label: "Claude-MD Compliance",
 			enabled: true,
 			model: "inherit",
-			tools: ["read", "grep", "ls"],
 		},
-		"bugbot": {
+		bugbot: {
 			id: "bugbot",
 			label: "Bugbot",
 			enabled: true,
 			model: "inherit",
-			tools: ["read", "grep", "bash"],
 		},
 		"history-context": {
 			id: "history-context",
 			label: "History Context",
 			enabled: true,
 			model: "inherit",
-			tools: ["read", "bash"],
 		},
 		"security-review": {
 			id: "security-review",
 			label: "Security Review",
 			enabled: true,
 			model: "inherit",
-			tools: ["read", "grep", "bash"],
 		},
 		"code-comments": {
 			id: "code-comments",
 			label: "Code Comments",
 			enabled: true,
 			model: "inherit",
-			tools: ["read", "grep"],
 		},
-		"conventions": {
+		conventions: {
 			id: "conventions",
 			label: "Conventions",
 			enabled: false,
 			model: "inherit",
-			tools: ["read", "grep", "ls"],
 		},
-	},
-	inheritance: {
-		toolsDefault: ["read", "grep", "find", "ls", "bash"],
-		inheritProjectContext: false,
-		inheritSkills: false,
 	},
 	budgets: {
 		turnBudget: { maxTurns: 20, graceTurns: 2 },
 	},
 };
-
-/** Hard upper bound on parallel reviewers, regardless of user config. */
-export const MAX_PARALLEL_CONCURRENCY = 4;
 
 /**
  * Canonical config file path — top-level beside `permission-modes.json`,
@@ -129,6 +118,40 @@ export function loadRawConfig(): Record<string, unknown> {
 	}
 }
 
+/** Legacy config keys that no longer drive behavior (migration warning only). */
+export const LEGACY_CONFIG_KEYS = [
+	"concurrency",
+	"inheritance",
+	"gate.scorePerIssue",
+	"reviewers.<id>.tools",
+	"reviewers.<id>.timeoutMs",
+] as const;
+
+/** Detect legacy keys in a raw config and return human-readable warnings. */
+export function legacyConfigWarnings(raw: Record<string, unknown>): string[] {
+	const warnings: string[] = [];
+	if ("concurrency" in raw) {
+		warnings.push("concurrency is no longer used (workflowScript runs all reviewers in parallel).");
+	}
+	if ("inheritance" in raw) {
+		warnings.push("inheritance is no longer used (agent tools come from agent frontmatter).");
+	}
+	const gate = raw.gate as Record<string, unknown> | undefined;
+	if (gate && "scorePerIssue" in gate) {
+		warnings.push("gate.scorePerIssue is no longer used (gate re-scores within its single pass).");
+	}
+	const reviewers = raw.reviewers as Record<string, unknown> | undefined;
+	if (reviewers && typeof reviewers === "object") {
+		for (const [id, ov] of Object.entries(reviewers)) {
+			if (!ov || typeof ov !== "object" || Array.isArray(ov)) continue;
+			const o = ov as Record<string, unknown>;
+			if ("tools" in o) warnings.push(`reviewers.${id}.tools is no longer used (tools come from agent frontmatter).`);
+			if ("timeoutMs" in o) warnings.push(`reviewers.${id}.timeoutMs is no longer used; use budgets.turnBudget.`);
+		}
+	}
+	return warnings;
+}
+
 /**
  * Deep-merge a raw user config over DEFAULT_CONFIG. We deliberately re-build
  * nested objects rather than mutating so the merge is pure.
@@ -138,9 +161,6 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return base;
 	const r = raw as Record<string, unknown>;
 
-	// schemaVersion: pass through whatever the user wrote so validateConfig
-	// can flag unsupported versions. We never silently coerce — unknown
-	// future versions should not pretend to be loadable.
 	if (typeof r.schemaVersion === "number") {
 		base.schemaVersion = r.schemaVersion as 1;
 	}
@@ -154,24 +174,29 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 		if (typeof g.threshold === "number" && Number.isFinite(g.threshold)) {
 			base.gate.threshold = clampThreshold(g.threshold);
 		}
-		if (typeof g.scorePerIssue === "string") {
-			const mode = parseScorePerIssueMode(g.scorePerIssue);
-			if (mode) base.gate.scorePerIssue = mode;
+		if (typeof g.verdictPolicy === "string") {
+			const vp = parseVerdictPolicy(g.verdictPolicy);
+			if (vp) base.gate.verdictPolicy = vp;
+		}
+		// Legacy: `scorePerIssue` ignored with a migration warning (see
+		// legacyConfigWarnings). Explicitly dropped here so it cannot leak.
+	}
+
+	// Routing block.
+	if (r.routing && typeof r.routing === "object" && !Array.isArray(r.routing)) {
+		const rt = r.routing as Record<string, unknown>;
+		if (typeof rt.mode === "string") {
+			const mode = parseRoutingMode(rt.mode);
+			if (mode) base.routing.mode = mode;
 		}
 	}
 
-	// Top-level concurrency (clamped to [1, MAX_PARALLEL_CONCURRENCY]).
-	if (typeof r.concurrency === "number" && Number.isFinite(r.concurrency)) {
-		base.concurrency = Math.max(1, Math.min(MAX_PARALLEL_CONCURRENCY, Math.floor(r.concurrency)));
-	}
-
-	// Reviewer overrides — keyed by id; the user can add, disable, or change
-	// model/thinking/tools. They cannot redefine id or label.
+	// Reviewer overrides — keyed by id. tools/timeoutMs are ignored (legacy).
 	if (r.reviewers && typeof r.reviewers === "object" && !Array.isArray(r.reviewers)) {
 		const reviewers = r.reviewers as Record<string, unknown>;
-		for (const [id, raw] of Object.entries(reviewers)) {
-			if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-			const ov = raw as Record<string, unknown>;
+		for (const [id, rawR] of Object.entries(reviewers)) {
+			if (!rawR || typeof rawR !== "object" || Array.isArray(rawR)) continue;
+			const ov = rawR as Record<string, unknown>;
 			const existing = base.reviewers[id];
 			const merged: ReviewerSpec = existing
 				? { ...existing, id, label: existing.label }
@@ -180,28 +205,8 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 			if (typeof ov.enabled === "boolean") merged.enabled = ov.enabled;
 			if (typeof ov.model === "string") merged.model = ov.model;
 			if (typeof ov.thinking === "string") merged.thinking = ov.thinking;
-			if (Array.isArray(ov.tools)) {
-				merged.tools = ov.tools.filter((t): t is string => typeof t === "string");
-			}
 			if (typeof ov.promptPath === "string") merged.promptPath = ov.promptPath;
-			if (typeof ov.timeoutMs === "number" && Number.isFinite(ov.timeoutMs)) {
-				merged.timeoutMs = Math.max(1000, Math.floor(ov.timeoutMs));
-			}
 			base.reviewers[id] = merged;
-		}
-	}
-
-	// Inheritance block.
-	if (r.inheritance && typeof r.inheritance === "object" && !Array.isArray(r.inheritance)) {
-		const inh = r.inheritance as Record<string, unknown>;
-		if (Array.isArray(inh.toolsDefault)) {
-			base.inheritance.toolsDefault = inh.toolsDefault.filter((t): t is string => typeof t === "string");
-		}
-		if (typeof inh.inheritProjectContext === "boolean") {
-			base.inheritance.inheritProjectContext = inh.inheritProjectContext;
-		}
-		if (typeof inh.inheritSkills === "boolean") {
-			base.inheritance.inheritSkills = inh.inheritSkills;
 		}
 	}
 
@@ -235,13 +240,15 @@ export function clampThreshold(n: number): number {
 	return Math.max(0, Math.min(10, Math.floor(n)));
 }
 
-export function parseScorePerIssueMode(raw: string): ScorePerIssueMode | null {
+export function parseVerdictPolicy(raw: string): VerdictPolicy | null {
 	const v = raw.trim().toLowerCase();
-	if (v === "off" || v === "false" || v === "0" || v === "no") return "off";
-	if (v === "blocker-major" || v === "blocker_major" || v === "major") {
-		return "blocker-major";
-	}
-	if (v === "all" || v === "true" || v === "1" || v === "yes") return "all";
+	if (v === "strict" || v === "legacy") return v;
+	return null;
+}
+
+export function parseRoutingMode(raw: string): RoutingMode | null {
+	const v = raw.trim().toLowerCase();
+	if (v === "adaptive" || v === "all") return v;
 	return null;
 }
 
@@ -263,15 +270,11 @@ export function validateConfig(cfg: PiReviewConfig): { ok: true } | { ok: false;
 	if (cfg.gate.threshold < 0 || cfg.gate.threshold > 10) {
 		errors.push("gate.threshold must be between 0 and 10");
 	}
-	if (
-		cfg.gate.scorePerIssue !== "off" &&
-		cfg.gate.scorePerIssue !== "blocker-major" &&
-		cfg.gate.scorePerIssue !== "all"
-	) {
-		errors.push("gate.scorePerIssue must be off | blocker-major | all");
+	if (cfg.gate.verdictPolicy !== "strict" && cfg.gate.verdictPolicy !== "legacy") {
+		errors.push("gate.verdictPolicy must be strict | legacy");
 	}
-	if (cfg.concurrency < 1 || cfg.concurrency > MAX_PARALLEL_CONCURRENCY) {
-		errors.push(`concurrency must be between 1 and ${MAX_PARALLEL_CONCURRENCY}`);
+	if (cfg.routing.mode !== "adaptive" && cfg.routing.mode !== "all") {
+		errors.push("routing.mode must be adaptive | all");
 	}
 	for (const [id, r] of Object.entries(cfg.reviewers)) {
 		if (r.model !== "inherit" && typeof r.model !== "string") {
@@ -294,10 +297,9 @@ export function writeConfig(cfg: PiReviewConfig): void {
 		renameSync(tmp, path);
 	} catch (err) {
 		try {
-			// Best-effort cleanup of the temp file on failure.
 			unlinkSync(tmp);
 		} catch {
-			// Ignore secondary errors during cleanup.
+			/* ignore */
 		}
 		throw err;
 	}
@@ -308,11 +310,15 @@ export function writeConfig(cfg: PiReviewConfig): void {
  * validation issues. When validation fails, the function still returns the
  * merged config (best-effort) so the caller can decide whether to proceed.
  */
-export function loadConfig(): { config: PiReviewConfig; errors: string[] } {
+export function loadConfig(): { config: PiReviewConfig; errors: string[]; legacyWarnings: string[] } {
 	const raw = loadRawConfig();
 	const config = mergeWithDefaults(raw);
 	const validation = validateConfig(config);
-	return { config, errors: validation.ok ? [] : validation.errors };
+	return {
+		config,
+		errors: validation.ok ? [] : validation.errors,
+		legacyWarnings: legacyConfigWarnings(raw),
+	};
 }
 
 /**

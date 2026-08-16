@@ -7,6 +7,9 @@ export function normalizeUserInput(text: string): string {
 	return text.replace(/[，,;]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Regex matching `github.com/<owner>/<repo>/pull/<number>` (used for full parsing). */
+export const PR_REF_REGEX = /github\.com\/([\w.-]+)\/([\w.-]+)\/pull\/(\d+)/i;
+
 /**
  * Return a `gh pr diff` ref: full PR URL, or PR number string.
  * Returns null when no PR reference is detected.

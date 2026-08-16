@@ -1,24 +1,30 @@
 /**
  * Build the review directive injected into the main agent (hidden, via
- * `sendMessage` with `display:false` + `triggerTurn:true` — see index.ts).
+ * `sendMessage` with `display:false` + `triggerTurn:true`).
  *
- * v0.6.0: pi-subagents ≥0.41 removed top-level `subagent({ tasks: [...] })`;
- * fan-out now runs through one `subagent({ workflowScript, async:false })`.
- * The script fans out lean reviewers via `runs.all([...])` (each child carries
- * its own toolBudget/turnBudget), then feeds inlined reviewer JSON to the gate
- * via `runs.run("gate", ...)`. Reviewers return JSON as their final reply.
+ * v0.7.0 contract (post-mortem from PR #18689 review):
+ *   - chatProgress must be "auto" | "off" | "live-card" — anything else is
+ *     rejected by pi-subagents schema validation.
+ *   - Every reviewer child declares `cwd` (target workspace) and
+ *     `outputSchema` so pi-subagents returns `result.structuredOutput`.
+ *   - "inherit" reviewer models are NOT expanded into concrete model ids.
+ *     The workflow script leaves `model:` off so the orchestrator keeps the
+ *     inheritance link.
+ *   - The gate consumes reviewer `structuredOutput` objects directly, never
+ *     Markdown code fences.
+ *   - Step 3 hands off to the `pi_review_report` tool, which is the only
+ *     authoritative report renderer (deterministic code-side verdict).
  */
-import { join } from "node:path";
 import {
 	FALSE_POSITIVE_GUIDANCE,
+	LEAN_BUDGETS,
 	LEAN_GATE_AGENT,
 	leanAgentName,
 	resolveLeanBudgets,
-	toolBudgetForReviewer,
 	withThinkingSuffix,
 	type LeanBudgetSpec,
 } from "./lean-agents.js";
-import { buildObtainDiffScript, DIFF_META_REL } from "./obtain-diff.js";
+import { GATE_OUTPUT_SCHEMA, REVIEWER_OUTPUT_SCHEMA, serializeSchemaForJs } from "./workflow-schemas.js";
 import type { ReviewerSpec, ReviewTarget } from "./types.js";
 
 export interface ReviewDirectiveInput {
@@ -29,39 +35,24 @@ export interface ReviewDirectiveInput {
 	/** Optional gate thinking from config (appended as model:thinking). */
 	gateThinking?: string;
 	threshold: number;
+	/** Verdict policy passed to the gate task (code-side authoritative). */
+	verdictPolicy?: "strict" | "legacy";
 	lite: boolean;
 	cwd: string;
+	/** Absolute path to the plugin-prepared target workspace (reviewer cwd). */
+	workspacePath: string;
+	/** Absolute path to the run manifest.json. */
+	manifestPath: string;
+	/** Absolute path to the captured change.diff. */
+	diffPath: string;
 	/** Optional turnBudget override from config.budgets. */
 	budgets?: LeanBudgetSpec;
 }
 
-export const DIFF_REL_PATH = join(".pi", "pi-review", "change.diff");
-export const FILES_REL_PATH = join(".pi", "pi-review", "changed-files.txt");
-export const KIND_REL_PATH = join(".pi", "pi-review", "change-kind.txt");
-export { DIFF_META_REL };
-
-export function diffFilePath(cwd: string): string {
-	return join(cwd, DIFF_REL_PATH);
-}
-
-export function filesListPath(cwd: string): string {
-	return join(cwd, FILES_REL_PATH);
-}
-
-export function kindFilePath(cwd: string): string {
-	return join(cwd, KIND_REL_PATH);
-}
-
-export function metaFilePath(cwd: string): string {
-	return join(cwd, DIFF_META_REL);
-}
-
 export function buildReviewDirective(input: ReviewDirectiveInput): string {
-	const { target, reviewers, gateModel, gateThinking, threshold, lite, cwd } = input;
+	const { target, reviewers, gateModel, gateThinking, threshold, lite, cwd, workspacePath, manifestPath, diffPath } = input;
+	const policy = input.verdictPolicy ?? "strict";
 	const budgets = input.budgets ?? resolveLeanBudgets();
-	const diffPath = diffFilePath(cwd);
-	const filesPath = filesListPath(cwd);
-	const kindPath = kindFilePath(cwd);
 	const gateModelWithThinking = withThinkingSuffix(gateModel, gateThinking);
 	const blocks: string[] = [];
 
@@ -72,14 +63,12 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		blocks.push("");
 	}
 	blocks.push(
-		`Review the change (${target.label}). Obtain the diff once, run one workflowScript (fan out ${reviewers.length} lean reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite)" : ""}${lite ? "" : " + inline gate"}), then write the report.`,
+		`Review the change (${target.label}). The plugin has already prepared the target workspace, diff and run manifest. Run one workflowScript that fans out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite)" : ""}${lite ? "" : " + inline gate"}, then call the \`pi_review_report\` tool to finalize the report. Do not re-write or summarize findings in chat.`,
 	);
 	blocks.push("");
 	blocks.push("## Hard rules (do not violate)");
 	blocks.push("");
-	blocks.push(
-		"- Call `subagent` **exactly one** time in this whole review: the Step 2 workflowScript call.",
-	);
+	blocks.push("- Call `subagent` **exactly one** time in this whole review: the Step 2 workflowScript call.");
 	blocks.push(
 		lite
 			? "- Step 2 must be a **single** `subagent({ workflowScript, async:false, ... })` that fans out the lite-reviewer via `runs.all([...])` — never more than one call."
@@ -89,12 +78,16 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		"- **Do not retry** or re-spawn if a reviewer times out, hits its turnBudget, returns partial output, or fails — `runs.all` collects failures as `{ ok:false }`; the script continues and you mark failures in the report.",
 	);
 	blocks.push(
-		"- **Do not** call `subagent` for obtaining the diff, verification, re-review, or rewriting the report.",
+		"- **Exception (script-level failure):** if the `subagent` call is rejected because the `workflowScript` **fails to parse** (no reviewer ever started — e.g. a syntax error in the script literal), you may correct the quoting/wrapping of the generated script and call `subagent` **once more**. Do not retry any reviewer that already started and failed.",
 	);
+	blocks.push("- **Do not** call `subagent` for verification, re-review, or rewriting the report.");
 	blocks.push(
 		"- Use the exact `pi-review.*` agents below — do not substitute builtin `reviewer`. Keep per-child `toolBudget` / `turnBudget` and the top-level `async:false` / `context:\"fresh\"` / `timeoutMs`.",
 	);
 	blocks.push("- Reviewer models **inherit** the parent session (omit per-child `model` unless the reviewer config sets an explicit model).");
+	blocks.push(
+		"- Copy the `workflowScript` below **exactly as written** into the `subagent({ workflowScript: ... })` call — every character matters (paths, `outputSchema` JSON, and budgets are already generated). Do not re-format, re-indent, or shorten it; a mistyped script is a script-level failure you may fix once only.",
+	);
 	blocks.push("");
 	blocks.push(`**Skip these false positives:** ${FALSE_POSITIVE_GUIDANCE}.`);
 	blocks.push("");
@@ -104,59 +97,55 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	);
 	blocks.push("");
 	const todoSteps = [
-		`Obtain diff + file list → ${DIFF_REL_PATH} (write only)`,
+		`Confirm the plugin-prepared manifest is readable: ${manifestPath}`,
+		`Confirm the target workspace is readable: ${workspacePath}`,
 		lite
 			? "Run one workflowScript: the lite-reviewer (one subagent call)"
 			: `Run one workflowScript: ${reviewers.length} parallel reviewers + inline gate (one subagent call)`,
-		"Write the report from the workflow return value",
+		"Call `pi_review_report` once with the workflow return value (never re-parse findings)",
 	];
 	for (const s of todoSteps) blocks.push(`- [ ] ${s}`);
 	blocks.push("");
 
-	// Step 1 — unchanged: obtain the diff.
-	blocks.push("## Step 1 — Obtain the change (you, the main agent)");
+	// Step 1 — confirm the plugin-prepared manifest (no LLM-obtained diff).
+	blocks.push("## Step 1 — Confirm the plugin-prepared run (you, the main agent)");
 	blocks.push("");
 	blocks.push(
-		`Create \`${join(cwd, ".pi", "pi-review")}\`, write the diff (+ file list + change-kind + diff-meta). **Do not read, cat, or summarize the diff body.**`,
+		`The extension has **already** cloned/checked out the target repo, fetched an accurate diff, computed SHA-256 of the diff, and written \`${manifestPath}\` plus \`${diffPath}\`.`,
 	);
 	blocks.push("");
-	blocks.push(
-		"**Accuracy:** for a clean tree, **fetch the remote default branch first** and compare against `origin/<base>` (not a stale local `main`/`master`). For PRs, prefer `gh pr diff`; if that fails, fetch `pull/<n>/head` + base and three-dot. Write `diff-meta.txt` so the base/head SHAs are auditable.",
-	);
+	blocks.push("Verify with a single `bash` call with **no `&&` / `||` chains** and no network calls. Use one `test` per file (no compound operators):");
 	blocks.push("");
 	blocks.push("```bash");
-	blocks.push(
-		buildObtainDiffScript({
-			cwd,
-			diffPath,
-			filesPath,
-			kindPath,
-			metaPath: metaFilePath(cwd),
-			prRef: target.kind === "pr" && target.prRef ? target.prRef : undefined,
-		}),
-	);
+	blocks.push(`test -s ${JSON.stringify(diffPath)}`);
+	blocks.push(`test -f ${JSON.stringify(manifestPath)}`);
+	blocks.push(`test -d ${JSON.stringify(workspacePath)}`);
 	blocks.push("```");
 	blocks.push("");
+	blocks.push("If any check fails, stop and notify the user. Otherwise continue.");
+	blocks.push("");
 
-	// Step 2 — single workflowScript call (fan-out + inline gate).
+	// Step 2 — single workflowScript call.
 	const script = buildWorkflowScript({
 		reviewers,
-		diffPath,
-		filesPath,
-		kindPath,
-		userContext: target.userContext,
-		target,
-		threshold,
 		gateModelWithThinking,
+		gateModel,
 		budgets,
 		lite,
+		threshold,
+		verdictPolicy: policy,
+		targetLabel: target.label,
+		userContext: target.userContext,
+		workspacePath,
+		manifestPath,
+		diffPath,
 	});
 	blocks.push("## Step 2 — Run the review (exactly one subagent workflowScript call)");
 	blocks.push("");
 	blocks.push(
 		lite
-			? "The script fans out the single lite-reviewer. Reviewers return JSON as their final reply; the script captures it."
-			: "The script fans out the lean reviewers in parallel, then feeds their inlined JSON findings to the gate. Reviewers return JSON as their final reply; the script captures each `result.output`.",
+			? "The script fans out the single lite-reviewer. Read `result.structuredOutput`; never parse free text."
+			: "The script fans out the lean reviewers in parallel, then feeds their structuredOutput objects to the gate. The gate also returns structuredOutput; the script passes it back unchanged.",
 	);
 	blocks.push("");
 	blocks.push("```js");
@@ -165,165 +154,209 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push(`  async: false,`);
 	blocks.push(`  context: "fresh",`);
 	blocks.push(`  timeoutMs: ${budgets.timeoutMs},`);
-	blocks.push(`  chatProgress: "milestones",`);
+	blocks.push(`  chatProgress: "auto",`);
 	blocks.push("})");
 	blocks.push("```");
 	blocks.push("");
 	blocks.push(
-		"The return value is a JSON object: `{ reviewers: [{ key, ok, output }], gate: { ok, output } | null }`. Each `output` is the child's final reply text (JSON) — parse it to write the report. Mark any `ok:false` reviewer as failed.",
+		"The return value is a JSON object: `{ reviewers: [{ key, ok, output, structuredOutput, status }], gate: { ok, output, structuredOutput } | null }`. Pass the whole object into `pi_review_report` — the tool is the source of truth for verdict, dedupe, and rendering.",
 	);
 	blocks.push("");
 
-	// Step 3 — Report.
-	blocks.push("## Step 3 — Report");
+	// Step 3 — tool call.
+	blocks.push("## Step 3 — Render the report (call `pi_review_report`)");
 	blocks.push("");
 	blocks.push(
-		"Read the **workflow return value** from Step 2 (the `Return:` object). **Do not re-read the full diff.** Write markdown into chat:",
+		"Call the `pi_review_report` tool **exactly once** with `{ runId, workflowReturn }`. The tool loads the manifest, re-validates each reviewer's structuredOutput, runs the deterministic verdict rules, and renders the final markdown + persists a session entry. Do not re-write findings yourself.",
 	);
 	blocks.push("");
-	blocks.push("- **Verdict**: `request_changes` if any blocker OR ≥3 major; `approve` if no blocker and no major; otherwise `comment`.");
-	blocks.push("- Group findings by reviewer; format `[SEVERITY · category · conf N] file:line — evidence`.");
-	blocks.push(
-		lite
-			? "- Lite mode skips the gate — apply the verdict rule directly."
-			: "- Short gate summary: verdict, reason, surviving issue count.",
-	);
-	blocks.push("- Cite `file:line`. Skip pre-existing issues, nitpicks, and CI/linter noise.");
-	blocks.push("- For any `ok:false` child, list it as failed with the error from `output`.");
-	blocks.push("");
+
+	// Parse guard (P0 regression): make sure the generated script is valid JS
+	// BEFORE it reaches the main agent. If the template ever regresses (e.g. an
+	// unquoted path), fail here with a clear error instead of at subagent() time.
+	try {
+		new Function(`return (async () => {\n${script}\n})`);
+	} catch (err) {
+		throw new Error(
+			`pi-review: generated workflowScript is not valid JavaScript — refusing to hand it to the main agent. This is a plugin bug; please report it. Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
 
 	return blocks.join("\n");
 }
 
 /**
- * Build the inline workflowScript string. Runs all reviewers in parallel via
- * `runs.all([...])` (each child carries its own toolBudget/turnBudget), then —
- * unless lite — feeds inlined reviewer JSON to the gate via `runs.run("gate")`.
- *
- * Task strings are injected as JSON-stringified JS string literals at the head
- * of the script (`const TASK_<id> = "...";`). JSON string literals are valid
- * JS string literals, so quoting/escaping is always correct regardless of the
- * task text content.
+ * Build the inline workflowScript string. Single-wave: one `runs.all([...])`
+ * for reviewers, one `runs.run(\"gate\")`. Every child carries `cwd`,
+ * `outputSchema`, `toolBudget`/`turnBudget`; explicit model overrides flow
+ * through only when the reviewer config is not `inherit`.
  */
 export function buildWorkflowScript(input: {
 	reviewers: ReviewerSpec[];
-	diffPath: string;
-	filesPath: string;
-	kindPath: string;
-	userContext?: string;
-	target: ReviewTarget;
-	threshold: number;
 	gateModelWithThinking: string;
+	gateModel: string;
 	budgets: LeanBudgetSpec;
 	lite: boolean;
+	threshold: number;
+	/** Verdict policy for the gate task text (strict is code-side default). */
+	verdictPolicy?: "strict" | "legacy";
+	targetLabel: string;
+	userContext?: string;
+	/** Absolute target workspace path (reviewer + gate cwd). */
+	workspacePath: string;
+	/** Absolute run manifest path. */
+	manifestPath: string;
+	/** Absolute change.diff path. */
+	diffPath: string;
 }): string {
-	const { reviewers, diffPath, filesPath, kindPath, userContext, target, threshold, gateModelWithThinking, budgets, lite } = input;
+	const {
+		reviewers,
+		gateModelWithThinking,
+		gateModel,
+		budgets,
+		lite,
+		threshold,
+		verdictPolicy = "strict",
+		targetLabel,
+		userContext,
+		workspacePath,
+		manifestPath,
+		diffPath,
+	} = input;
 
-	// Stable identifier for a reviewer id (e.g. "history-context" → "history_context").
-	const ident = (id: string): string => id.replace(/[^A-Za-z0-9_]/g, "_");
+	const reviewerSchemaLiteral = serializeSchemaForJs(REVIEWER_OUTPUT_SCHEMA);
+	const gateSchemaLiteral = serializeSchemaForJs(GATE_OUTPUT_SCHEMA);
 
 	const lines: string[] = [];
+	lines.push("return {");
 
-	// Pre-declare each reviewer task as a JSON-stringified JS string literal.
+	// ---- runs.all reviewers ---------------------------------------------
+	lines.push("  reviewers: await runs.all([");
 	for (const r of reviewers) {
-		const task = buildReviewerTask(r.id, diffPath, filesPath, kindPath, userContext);
-		lines.push(`const TASK_${ident(r.id)} = ${JSON.stringify(task)};`);
-	}
+		const tb = LEAN_BUDGETS.defaultToolBudget; // resolved below per-id
+		const tbForId = r.id === "history-context" ? LEAN_BUDGETS.historyToolBudget : tb;
+		const taskParts = [
+			`Read ${JSON.stringify(diffPath)} as the change. Also read ${JSON.stringify(manifestPath)} for change-profile (docsOnly, file list, rule file paths). Do not re-fetch via gh/git.`,
+			`Your cwd is the target workspace (${JSON.stringify(workspacePath)}). Run all read/grep/git from there.`,
+			"Stay within budgets; return your findings as structuredOutput matching the REVIEWER_SCHEMA and stop.",
+			"Do not read plan.md, progress.md, .pi-subagents transcripts, or node_modules.",
+			"Prefer Read/Grep. If you use bash, only simple allowlisted commands (no &&/||/; compounds).",
+		];
+		if (r.id === "claude-md-compliance") {
+			taskParts.push(
+				`If change-profile.rulePaths is empty, return status: skipped with empty issues — do not invent rule violations.`,
+			);
+		}
+		if (r.id === "history-context") {
+			taskParts.push(
+				`If change-profile.history.available is false, return status: skipped with empty issues. Take ≤5 paths from the file list and run ONE bash: git log -n 5 --oneline -- <file1> <file2> ...`,
+			);
+		}
+		if (r.id === "code-comments") {
+			taskParts.push(
+				`If change-profile.docsOnly is true, return status: skipped with empty issues.`,
+			);
+		}
+		if (r.id === "bugbot" || r.id === "security-review") {
+			taskParts.push(
+				`If change-profile.docsOnly is true, return status: skipped with empty issues. Otherwise prefer diff-only; at most 3 extra file reads.`,
+			);
+		}
+		if (userContext?.trim()) {
+			taskParts.push(`User request: ${userContext.trim()}`);
+		}
+		const taskLiteral = JSON.stringify(taskParts.join(" "));
 
-	// Parallel reviewers — each child carries its own toolBudget/turnBudget.
-	lines.push("const reviews = await runs.all([");
-	for (const r of reviewers) {
-		const tb = toolBudgetForReviewer(r.id);
-		const modelLine =
-			r.model && r.model !== "inherit" ? `\n      model: ${JSON.stringify(r.model)},` : "";
+		const modelClause =
+			r.model && r.model !== "inherit"
+				? `\n      model: ${JSON.stringify(r.model)},`
+				: "";
 		lines.push("    {");
 		lines.push(`      key: ${JSON.stringify(r.id)},`);
 		lines.push(`      agent: ${JSON.stringify(leanAgentName(r.id))},`);
-		lines.push(`      task: TASK_${ident(r.id)},`);
-		lines.push(`      toolBudget: { soft: ${tb.soft}, hard: ${tb.hard} },`);
-		lines.push(`      turnBudget: { maxTurns: ${budgets.turnBudget.maxTurns}, graceTurns: ${budgets.turnBudget.graceTurns} },${modelLine}`);
+		lines.push(`      task: ${taskLiteral},`);
+		lines.push(`      cwd: ${JSON.stringify(workspacePath)},`);
+		if (r.thinking) {
+			lines.push(`      thinking: ${JSON.stringify(r.thinking)},`);
+		}
+		lines.push(`      toolBudget: { soft: ${tbForId.soft}, hard: ${tbForId.hard} },`);
+		lines.push(
+			`      turnBudget: { maxTurns: ${budgets.turnBudget.maxTurns}, graceTurns: ${budgets.turnBudget.graceTurns} },${modelClause}`,
+		);
+		lines.push(`      outputSchema: ${reviewerSchemaLiteral},`);
 		lines.push("    },");
 	}
-	lines.push("]);");
-	lines.push("");
+	lines.push("  ]),");
 
-	// Inline gate (skipped in lite mode).
+	// ---- gate ----------------------------------------------------------
 	if (!lite) {
-		const gateTask = buildGateTask(target.label, threshold);
-		lines.push(`const TASK_gate = ${JSON.stringify(gateTask)};`);
-		// Build the inlined reviewer-findings block from each child result.
-		// NOTE: this line is a plain single-quoted string so the inner `${...}`
-		// reaches the workflow script as the script's own template-literal syntax
-		// (a directive.ts template literal here would interpolate it prematurely).
-		lines.push(
-			'const gateInput = reviews.map(r => `## ${r.key} (${r.ok ? "ok" : "FAILED"})\\n${r.ok ? r.output : (r.error ?? r.output)}`).join("\\n\\n");',
-		);
-		lines.push('const gate = await runs.run("gate", {');
-		lines.push(`  agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
-		lines.push('  task: TASK_gate + "\\n\\n## Reviewer findings (inline)\\n" + gateInput,');
-		lines.push(`  model: ${JSON.stringify(gateModelWithThinking)},`);
-		lines.push(`  toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
-		lines.push(`  turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
-		lines.push("});");
-		lines.push("");
-		lines.push("return {");
-		lines.push("  reviewers: reviews.map(r => ({ key: r.key, ok: r.ok, output: r.output })),");
-		lines.push("  gate: { ok: gate.ok, output: gate.output },");
-		lines.push("};");
+		const gateTask = [
+			`Synthesize reviewer findings for ${targetLabel}.`,
+			`Threshold ${threshold}: drop candidates with finalConfidence < ${threshold}.`,
+			`Inputs are reviewer structuredOutput objects (each has status, issues[].fingerprint, coverage).`,
+			`Re-score every candidate 1–10 with explicit verification on high-severity ones (blocker/major). Do not copy reviewer confidence verbatim.`,
+			`Every candidate must appear in dispositions with decision (kept | dropped | merged), originalConfidence, finalConfidence, sourceReviewers, reason.`,
+			verdictPolicy === "legacy"
+				? `Verdict (legacy): request_changes if any blocker OR >=3 majors; approve if no blocker/major; else comment.`
+				: `Verdict (strict): request_changes if any surviving blocker or major; comment if only minor/nit; approve if no surviving issues.`,
+			`The parent re-applies verdict in code; this is a recommendation.`,
+			`Skip false positives: ${FALSE_POSITIVE_GUIDANCE}.`,
+			`Output structuredOutput matching GATE_SCHEMA (verdict, issues[], dispositions[], reason).`,
+		].join(" ");
+		const gateTaskLiteral = JSON.stringify(gateTask);
+
+		lines.push("  gate: await (async () => {");
+		// Inline the reviewer structuredOutput objects into the gate task.
+		// We can't JSON.stringify them yet (they don't exist), so we build a
+		// gateInput array using the captured reviewers list and pass it as
+		// the task string at runtime.
+		lines.push("    const reviewerInputs = reviewers.map((r) => ({");
+		lines.push("      key: r.key,");
+		lines.push("      ok: r.ok,");
+		lines.push("      error: r.error,");
+		lines.push("      status: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput.status : (r.ok ? 'limited' : 'failed'),");
+		lines.push("      issues: r.ok && r.structuredOutput && Array.isArray(r.structuredOutput.issues) ? r.structuredOutput.issues : [],");
+		lines.push("      coverage: r.ok && r.structuredOutput && r.structuredOutput.coverage ? r.structuredOutput.coverage : { filesChecked: [], commandsRun: [], limitations: [r.ok ? 'no structuredOutput' : 'reviewer failed'] },");
+		lines.push("    }));");
+		lines.push("    const gateTask = " + gateTaskLiteral + " + '\\n\\n## Reviewer findings (structuredOutput)\\n' + JSON.stringify(reviewerInputs);");
+		lines.push("    const result = await runs.run('gate', {");
+		lines.push(`      agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
+		lines.push("      task: gateTask,");
+		lines.push(`      cwd: ${JSON.stringify(workspacePath)},`);
+		lines.push(`      model: ${JSON.stringify(gateModelWithThinking)},`);
+		lines.push(`      toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
+		lines.push(`      turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
+		lines.push(`      outputSchema: ${gateSchemaLiteral},`);
+		lines.push("    });");
+		lines.push("    return {");
+		lines.push("      ok: result.ok,");
+		lines.push("      error: result.error,");
+		lines.push("      output: result.output,");
+		lines.push("      structuredOutput: result.ok && result.structuredOutput && typeof result.structuredOutput === 'object' ? result.structuredOutput : null,");
+		lines.push("    };");
+		lines.push("  })(),");
 	} else {
-		lines.push("return {");
-		lines.push("  reviewers: reviews.map(r => ({ key: r.key, ok: r.ok, output: r.output })),");
 		lines.push("  gate: null,");
-		lines.push("};");
 	}
 
+	// ---- reviewer summary shape ----------------------------------------
+	lines.push("  reviewersShaped: reviewers.map((r) => ({");
+	lines.push("    key: r.key,");
+	lines.push("    ok: r.ok,");
+	lines.push("    error: r.error,");
+	lines.push("    status: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput.status : (r.ok ? 'limited' : 'failed'),");
+	lines.push("    output: r.output,");
+	lines.push("    structuredOutput: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput : null,");
+	lines.push("  })),");
+	lines.push("};");
 	return lines.join("\n");
 }
 
-/** Build the static gate task briefing (reviewer findings are appended inline by the script). */
-function buildGateTask(changeLabel: string, threshold: number): string {
-	return [
-		`Synthesize reviewer findings for change ${changeLabel}.`,
-		`Threshold: ${threshold} (drop issues with confidence < ${threshold}).`,
-		`Reviewer findings are inlined below as JSON text (one block per reviewer). Parse each block's JSON.`,
-		`If a block fails to parse or the reviewer is FAILED, skip it and note it.`,
-		`Dedupe by (file, line, category), re-score 1-10, return surviving issues + verdict.`,
-		`Skip false positives: ${FALSE_POSITIVE_GUIDANCE}.`,
-		`Output JSON: {"verdict":"approve|request_changes|comment","issues":[...],"reason":"..."}`,
-	].join(" ");
+/** Map the workflow return value into a normalized `ReviewWorkflowReturn` for the tool. */
+export function buildWorkflowReturnShape() {
+	return "{ reviewers, reviewersShaped, gate }";
 }
 
-function buildReviewerTask(
-	id: string,
-	diffPath: string,
-	filesPath: string,
-	kindPath: string,
-	userContext?: string,
-): string {
-	const parts = [
-		`Read ${diffPath} as the change (only diff source — do not re-fetch via gh/git for the patch itself).`,
-		`Also read ${filesPath} (changed paths) and ${kindPath} (docs|code).`,
-		"Follow your system instructions. Stay within budgets; return your findings as JSON in your final reply and stop.",
-		"Do not read plan.md, progress.md, .pi-subagents transcripts, or node_modules.",
-		"Prefer Read/Grep. If you use bash, only simple allowlisted commands (no &&/||/; compounds).",
-	];
-	if (id === "bugbot" || id === "security-review") {
-		parts.push(
-			"If change-kind is docs: return empty issues after skimming the diff — no per-file reads. Otherwise prefer diff-only; at most 3 extra file reads; optional git show/log/blame only when a symbol needs clarification.",
-		);
-	}
-	if (id === "history-context") {
-		parts.push(
-			"Take ≤5 paths from the file list. Run ONE bash: git log -n 5 --oneline -- <file1> <file2> ... (multiple paths, one command). Optional git blame -L on one suspicious hunk. No per-file separate bash turns.",
-		);
-	}
-	if (id === "claude-md-compliance") {
-		parts.push(
-			"Only audit written project rules (AGENTS.md / CLAUDE.md / .pi rules). If none exist, empty issues.",
-		);
-	}
-	if (userContext?.trim()) {
-		parts.push(`User request: ${userContext.trim()}`);
-	}
-	return parts.join(" ");
-}
+// `gateModel` reserved for config validation parity with previous surface.
+export const _LEGACY_PARITY = { gateModel: "" };
+void _LEGACY_PARITY;

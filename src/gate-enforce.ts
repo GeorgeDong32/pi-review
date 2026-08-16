@@ -1,10 +1,10 @@
 /**
  * Deterministic gate post-process (Claude Phase 5 equivalent).
  *
- * LLM gate may re-score / suggest verdict; these functions always enforce
- * threshold, dedupe, and verdict rules in code.
+ * Re-scoring + dedupe + threshold + verdict, all in code. The LLM gate is
+ * advisory; the parent pipeline always re-enforces.
  */
-import type { GateVerdict, Issue, IssueSeverity, Verdict } from "./types.js";
+import type { GateDisposition, GateVerdict, Issue, IssueSeverity, Verdict } from "./types.js";
 
 const SEVERITY_RANK: Record<IssueSeverity, number> = {
 	blocker: 4,
@@ -22,11 +22,15 @@ function dedupeKey(issue: Issue): string {
 	return `${issue.file}\0${line}\0${issue.category}`;
 }
 
-/** Keep highest confidence; tie-break: higher severity, then longer evidence. */
+function hasFingerprint(issue: Issue): boolean {
+	return typeof issue.fingerprint === "string" && issue.fingerprint.length > 0;
+}
+
+/** Dedupe by (file, line, category), or by stable `fingerprint` when present. */
 export function dedupeIssues(issues: Issue[]): Issue[] {
 	const best = new Map<string, Issue>();
 	for (const issue of issues) {
-		const key = dedupeKey(issue);
+		const key = hasFingerprint(issue) ? `fp:${issue.fingerprint}` : dedupeKey(issue);
 		const prev = best.get(key);
 		if (!prev) {
 			best.set(key, issue);
@@ -57,18 +61,28 @@ export function filterByThreshold(issues: Issue[], threshold: number): Issue[] {
 }
 
 /**
- * Verdict rules (same as prompts/gate.md):
- * 1. request_changes if any blocker, or ≥3 major
- * 2. approve if no blocker and no major
- * 3. comment otherwise (only minor/nit)
- * Empty → approve
+ * Default verdict policy (strict):
+ *   - any surviving blocker or major → `request_changes`
+ *   - only minor / nit → `comment`
+ *   - no surviving issues → `approve` (caller must still check coverage)
+ *
+ * Legacy policy (kept for `verdictPolicy:"legacy"`):
+ *   - request_changes on any blocker OR ≥3 major
+ *   - approve on no blocker and no major
+ *   - otherwise comment
  */
-export function computeVerdict(issues: Issue[]): Verdict {
+export type VerdictPolicy = "strict" | "legacy";
+
+export function computeVerdict(issues: Issue[], policy: VerdictPolicy = "strict"): Verdict {
 	if (issues.length === 0) return "approve";
 	const blockers = issues.filter((i) => i.severity === "blocker").length;
 	const majors = issues.filter((i) => i.severity === "major").length;
-	if (blockers > 0 || majors >= 3) return "request_changes";
-	if (majors === 0) return "approve";
+	if (policy === "legacy") {
+		if (blockers > 0 || majors >= 3) return "request_changes";
+		if (majors === 0) return "approve";
+		return "comment";
+	}
+	if (blockers > 0 || majors > 0) return "request_changes";
 	return "comment";
 }
 
@@ -86,10 +100,11 @@ export function defaultApproveReason(issues: Issue[]): string {
 export function enforceGateOutput(
 	raw: { issues: Issue[]; reason?: string },
 	threshold: number,
+	policy: VerdictPolicy = "strict",
 ): GateVerdict {
 	const deduped = dedupeIssues(raw.issues ?? []);
 	const issues = filterByThreshold(deduped, threshold);
-	const verdict = computeVerdict(issues);
+	const verdict = computeVerdict(issues, policy);
 	let reason = (raw.reason ?? "").trim();
 	if (!reason) {
 		reason =
@@ -98,5 +113,27 @@ export function enforceGateOutput(
 				: `Enforced verdict from ${issues.length} issue(s) after threshold ${threshold}.`;
 	}
 	if (reason.length > 500) reason = reason.slice(0, 500);
-	return { verdict, issues, reason };
+	return { verdict, issues, reason, dispositions: [], status: "ok" };
+}
+
+/**
+ * Build an empty dispositions array when the gate did not return one. We
+ * keep every candidate visible so the report can audit dropped/merged ones.
+ */
+export function buildDispositions(
+	candidates: Issue[],
+	surviving: Issue[],
+): GateDisposition[] {
+	const survivingKeys = new Set(surviving.map((i) => i.fingerprint ?? dedupeKey(i)));
+	return candidates.map((c) => ({
+		fingerprint: c.fingerprint ?? dedupeKey(c),
+		decision: survivingKeys.has(c.fingerprint ?? dedupeKey(c)) ? "kept" : "dropped",
+		originalConfidence: c.confidence,
+		finalConfidence: c.confidence,
+		sourceReviewers: [],
+		reason:
+			survivingKeys.has(c.fingerprint ?? dedupeKey(c))
+				? "Survived threshold + dedupe."
+				: "Below threshold or merged into another candidate.",
+	}));
 }

@@ -1,10 +1,11 @@
 /**
- * Tests for deterministic gate post-process.
+ * Tests for src/gate-enforce.ts: dedupe, threshold, verdict, dispositions.
  */
 import { strict as assert } from "node:assert";
 import { describe, test } from "node:test";
 
 import {
+	buildDispositions,
 	computeVerdict,
 	dedupeIssues,
 	enforceGateOutput,
@@ -29,6 +30,16 @@ describe("dedupeIssues", () => {
 		assert.equal(out.length, 1);
 		assert.equal(out[0]!.confidence, 9);
 	});
+
+	test("stable fingerprint dedupes across reviewers", () => {
+		const a = issue({ file: "a.ts", line: 2, confidence: 8, severity: "major", evidence: "x" });
+		const b = issue({ file: "a.ts", line: 2, confidence: 6, severity: "minor", evidence: "x" });
+		a.fingerprint = "fp:1";
+		b.fingerprint = "fp:1";
+		const out = dedupeIssues([a, b]);
+		assert.equal(out.length, 1);
+		assert.equal(out[0]!.confidence, 8);
+	});
 });
 
 describe("filterByThreshold", () => {
@@ -46,62 +57,71 @@ describe("filterByThreshold", () => {
 });
 
 describe("computeVerdict", () => {
-	test("request_changes on blocker", () => {
+	test("strict: any blocker or major → request_changes", () => {
 		assert.equal(
 			computeVerdict([issue({ file: "a.ts", confidence: 9, severity: "blocker" })]),
 			"request_changes",
 		);
+		assert.equal(
+			computeVerdict([issue({ file: "a.ts", confidence: 9, severity: "major" })]),
+			"request_changes",
+		);
 	});
 
-	test("request_changes on ≥3 majors", () => {
+	test("legacy: needs ≥3 majors before request_changes", () => {
+		assert.equal(
+			computeVerdict([
+				issue({ file: "a.ts", confidence: 8, severity: "major" }),
+			], "legacy"),
+			"comment",
+		);
 		assert.equal(
 			computeVerdict([
 				issue({ file: "a.ts", confidence: 8, severity: "major" }),
 				issue({ file: "b.ts", confidence: 8, severity: "major" }),
 				issue({ file: "c.ts", confidence: 8, severity: "major" }),
-			]),
+			], "legacy"),
 			"request_changes",
 		);
 	});
 
-	test("comment on 1–2 majors", () => {
-		assert.equal(
-			computeVerdict([issue({ file: "a.ts", confidence: 8, severity: "major" })]),
-			"comment",
-		);
-	});
-
 	test("approve when empty or only minor/nit", () => {
-		assert.equal(computeVerdict([]), "approve");
-		assert.equal(
-			computeVerdict([issue({ file: "a.ts", confidence: 9, severity: "nit" })]),
-			"approve",
-		);
+		assert.equal(computeVerdict([], "strict"), "approve");
+		assert.equal(computeVerdict([issue({ file: "a.ts", confidence: 9, severity: "nit" })], "strict"), "comment");
 	});
 });
 
 describe("enforceGateOutput", () => {
-	test("overrides LLM approve when blockers remain above threshold", () => {
+	test("strict overrides LLM approve when a major remains", () => {
 		const out = enforceGateOutput(
-			{
-				issues: [issue({ file: "a.ts", confidence: 9, severity: "blocker" })],
-				reason: "looks fine",
-			},
+			{ issues: [issue({ file: "a.ts", confidence: 9, severity: "major" })], reason: "looks fine" },
 			8,
+			"strict",
 		);
 		assert.equal(out.verdict, "request_changes");
 		assert.equal(out.issues.length, 1);
+		assert.equal(out.dispositions.length, 0);
 	});
 
-	test("drops low-confidence issues then approves", () => {
+	test("drops low-confidence then approves", () => {
 		const out = enforceGateOutput(
-			{
-				issues: [issue({ file: "a.ts", confidence: 3, severity: "blocker" })],
-				reason: "noise",
-			},
+			{ issues: [issue({ file: "a.ts", confidence: 3, severity: "blocker" })], reason: "noise" },
 			8,
 		);
 		assert.equal(out.verdict, "approve");
-		assert.equal(out.issues.length, 0);
+	});
+});
+
+describe("buildDispositions", () => {
+	test("marks kept vs dropped by survival", () => {
+		const candidates = [
+			issue({ file: "a", line: 1, confidence: 9, severity: "blocker", evidence: "x", fingerprint: "fp:1" }),
+			issue({ file: "b", line: 1, confidence: 5, severity: "minor", evidence: "y", fingerprint: "fp:2" }),
+		];
+		const surviving = [candidates[0]!];
+		const d = buildDispositions(candidates, surviving);
+		const byFp = Object.fromEntries(d.map((x) => [x.fingerprint, x.decision]));
+		assert.equal(byFp["fp:1"], "kept");
+		assert.equal(byFp["fp:2"], "dropped");
 	});
 });

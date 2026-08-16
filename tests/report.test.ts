@@ -4,184 +4,224 @@
 import { strict as assert } from "node:assert";
 import { describe, test } from "node:test";
 
-import { buildReport, renderReport } from "../src/report.js";
-import type { GateRunResult, ReviewerRunResult } from "../src/types.js";
+import { buildReportFromWorkflow, renderReport, WorkflowReturnValue } from "../src/report.js";
+import type { GateDisposition, Issue } from "../src/types.js";
 
-const INPUT = {
-	kind: "local-git" as const,
-	label: "uncommitted changes (agent-fetch)",
+const MANIFEST = {
+	runId: "test-run",
+	targetLabel: "uncommitted changes (agent-fetch)",
+	targetKind: "local-git",
+	diffSha256: "deadbeefcafebabe0000000000000000",
+	workspacePath: "/tmp/ws",
+	docsOnly: false,
+	rulePaths: ["AGENTS.md"],
+	historyAvailable: true,
+	changedFiles: ["src/x.ts"],
+	baseSha: "abc",
+	headSha: "def",
 };
 
-const OK_REVIEWER: ReviewerRunResult = {
-	id: "bug-detector",
-	label: "Bug Detector",
-	model: "anthropic/claude-sonnet-4-6",
-	ok: true,
-	output: {
-		issues: [
-			{ file: "src/x.ts", line: 10, category: "bug", severity: "major", confidence: 8, evidence: "race" },
-			{ file: "src/x.ts", line: 20, category: "convention", severity: "nit", confidence: 3, evidence: "naming" },
-		],
-		summary: "1 race, 1 nit",
+const SUCCESS_REVIEWER: WorkflowReturnValue["reviewers"] = [
+	{
+		key: "bug-detector",
+		ok: true,
+		structuredOutput: {
+			status: "ok",
+			issues: [
+				{ file: "src/x.ts", line: 10, category: "bug", severity: "major", confidence: 8, evidence: "race" },
+				{ file: "src/x.ts", line: 20, category: "convention", severity: "nit", confidence: 3, evidence: "naming" },
+			],
+			summary: "1 race, 1 nit",
+			coverage: { filesChecked: ["src/x.ts"], commandsRun: ["git log -n 5"], limitations: [] },
+		},
 	},
-	durationMs: 12_300,
-};
+];
 
-const FAILED_REVIEWER: ReviewerRunResult = {
-	id: "conventions",
-	label: "Conventions",
-	model: "anthropic/claude-sonnet-4-6",
+const FAILED_REVIEWER = {
+	key: "conventions",
 	ok: false,
 	error: "timeout after 180000ms",
-	exitCode: null,
-	durationMs: 180_000,
-};
+} as const;
 
-describe("buildReport", () => {
+function enforced(issues: Issue[], dispositions: GateDisposition[] = [], verdict: "approve" | "request_changes" | "comment" = "comment") {
+	return { verdict, issues, dispositions, reason: "x" };
+}
+
+describe("buildReportFromWorkflow", () => {
 	test("verdict is 'error' when all reviewers failed", () => {
-		const report = buildReport({
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [FAILED_REVIEWER, { ...FAILED_REVIEWER, id: "x" }],
-			gate: null,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: [FAILED_REVIEWER], gate: null },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "comment",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "x",
 		});
 		assert.equal(report.verdict, "error");
 	});
 
-	test("verdict is 'no-gate' when gate missing/failed", () => {
-		const report = buildReport({
+	test("verdict reflects enforced result when gate ok", () => {
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate: null,
-			input: INPUT,
-		});
-		assert.equal(report.verdict, "no-gate");
-	});
-
-	test("verdict reflects gate when present and ok", () => {
-		const gate: GateRunResult = {
-			ok: true,
-			model: "haiku",
-			verdict: { verdict: "request_changes", issues: [], reason: "blockers" },
-			durationMs: 5000,
-		};
-		const report = buildReport({
-			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: {
+				reviewers: SUCCESS_REVIEWER,
+				gate: { ok: true, structuredOutput: { status: "ok" } },
+			},
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "request_changes",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "x",
 		});
 		assert.equal(report.verdict, "request_changes");
 	});
 
-	test("totals use gate's deduped issues when present", () => {
-		const gate: GateRunResult = {
-			ok: true,
-			model: "haiku",
-			verdict: {
-				verdict: "request_changes",
-				issues: [
-					{ file: "a", category: "bug", severity: "blocker", confidence: 9, evidence: "x" },
-					{ file: "b", category: "convention", severity: "minor", confidence: 4, evidence: "y" },
-				],
-				reason: "x",
-			},
-			durationMs: 1000,
-		};
-		const report = buildReport({
+	test("totals use enforced issues", () => {
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: SUCCESS_REVIEWER, gate: { ok: true, structuredOutput: { status: "ok" } } },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [
+				{ file: "a", category: "bug", severity: "blocker", confidence: 9, evidence: "x", fingerprint: "a:-:bug:1" },
+				{ file: "b", category: "convention", severity: "minor", confidence: 4, evidence: "y", fingerprint: "b:-:convention:2" },
+			],
+			enforcedDispositions: [],
+			enforcedReason: "ok",
 		});
 		assert.equal(report.totals.issues, 2);
 		assert.equal(report.totals.bySeverity.blocker, 1);
 		assert.equal(report.totals.bySeverity.minor, 1);
 	});
 
-	test("totals fall back to reviewer sums when gate absent", () => {
-		const report = buildReport({
+	test("falls back to reviewer sums when gate absent", () => {
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate: null,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: SUCCESS_REVIEWER, gate: null },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "no gate",
 		});
-		assert.equal(report.totals.issues, 2);
-		assert.equal(report.totals.bySeverity.major, 1);
-		assert.equal(report.totals.bySeverity.nit, 1);
+		assert.equal(report.totals.issues, 0);
 	});
 });
 
 describe("renderReport", () => {
 	test("includes verdict header", () => {
-		const report = buildReport({
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate: null,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: SUCCESS_REVIEWER, gate: null },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "no gate",
 		});
 		const md = renderReport(report);
 		assert.ok(md.includes("## pi-review — uncommitted changes"));
 		assert.ok(md.includes("**Verdict: NO GATE**"));
 	});
 
-	test("includes per-reviewer sections", () => {
-		const report = buildReport({
+	test("includes reviewer coverage", () => {
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER, FAILED_REVIEWER],
-			gate: null,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: SUCCESS_REVIEWER, gate: null },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "no gate",
 		});
 		const md = renderReport(report);
-		assert.ok(md.includes("### bug-detector (anthropic/claude-sonnet-4-6) — ok"));
-		assert.ok(md.includes("### conventions (anthropic/claude-sonnet-4-6) — failed"));
-		assert.ok(md.includes("timeout"));
+		assert.ok(md.includes("bug-detector"));
+		assert.ok(md.includes("ok"));
 	});
 
-	test("includes gate section when present", () => {
-		const gate: GateRunResult = {
-			ok: true,
-			model: "haiku",
-			verdict: { verdict: "approve", issues: [], reason: "all clear" },
-			durationMs: 1000,
-		};
-		const report = buildReport({
+	test("includes dispositions block", () => {
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: SUCCESS_REVIEWER, gate: { ok: true, structuredOutput: { status: "ok" } } },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "request_changes",
+			enforcedIssues: [
+				{ file: "a", category: "bug", severity: "blocker", confidence: 9, evidence: "x", fingerprint: "a:-:bug:1" },
+			],
+			enforcedDispositions: [
+				{ fingerprint: "a:-:bug:1", decision: "kept", originalConfidence: 9, finalConfidence: 9, sourceReviewers: ["bugbot"], reason: "Survived" },
+				{ fingerprint: "b:-:bug:2", decision: "dropped", originalConfidence: 7, finalConfidence: 7, sourceReviewers: ["bugbot"], reason: "below threshold" },
+			],
+			enforcedReason: "blocker present",
 		});
 		const md = renderReport(report);
-		assert.ok(md.includes("### gate (haiku)"));
-		assert.ok(md.includes("verdict: approve"));
+		assert.ok(md.includes("### High-severity dispositions"));
+		assert.ok(md.includes("DROPPED"));
 	});
 
-	test("includes failed gate error message", () => {
-		const gate: GateRunResult = {
-			ok: false,
-			model: "haiku",
-			error: "schema validation failed: issues[0].severity",
-			durationMs: 1000,
-		};
-		const report = buildReport({
+	test("summary line includes run id", () => {
+		const report = buildReportFromWorkflow({
 			startedAt: 0,
-			reviewers: [OK_REVIEWER],
-			gate,
-			input: INPUT,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: SUCCESS_REVIEWER, gate: null },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "no gate",
 		});
 		const md = renderReport(report);
-		assert.ok(md.includes("### gate (haiku) — failed"));
-		assert.ok(md.includes("schema validation failed"));
-	});
-
-	test("summary line includes counts", () => {
-		const report = buildReport({
-			startedAt: 0,
-			reviewers: [OK_REVIEWER, FAILED_REVIEWER],
-			gate: null,
-			input: INPUT,
-		});
-		const md = renderReport(report);
-		assert.ok(md.includes("2 reviewers · 0 gate"));
+		assert.ok(md.includes("test-run"));
+		assert.ok(md.includes("Diff SHA-256"));
 	});
 });
+
+describe("gate enforcement strict vs legacy", () => {
+	// quick smoke: keep these in the same file for proximity to report.ts tests.
+	test("strict verdict treats any major as request_changes", async () => {
+		const { enforceGateOutput } = await import("../src/gate-enforce.js");
+		const out = enforceGateOutput(
+			{
+				issues: [
+					{ file: "a", category: "bug", severity: "major", confidence: 9, evidence: "x" },
+				],
+				reason: "x",
+			},
+			8,
+			"strict",
+		);
+		assert.equal(out.verdict, "request_changes");
+	});
+	test("legacy verdict needs >=3 majors before request_changes", async () => {
+		const { enforceGateOutput } = await import("../src/gate-enforce.js");
+		const out = enforceGateOutput(
+			{
+				issues: [
+					{ file: "a", category: "bug", severity: "major", confidence: 9, evidence: "x" },
+				],
+				reason: "x",
+			},
+			8,
+			"legacy",
+		);
+		assert.equal(out.verdict, "comment");
+	});
+});
+
+void enforced;

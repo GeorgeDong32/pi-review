@@ -1,20 +1,35 @@
+/**
+ * Prose / directive-copy tests for src/directive.ts.
+ *
+ * The JSON-stringified workflowScript body assertions live in
+ * tests/workflow-contract.test.ts (which parses the script back and asserts
+ * against plain text). This file only asserts the human-facing directive
+ * copy that is NOT embedded in the JSON string.
+ */
 import { strict as assert } from "node:assert";
 import { describe, test } from "node:test";
 
+import { buildReviewDirective } from "../src/directive.js";
 import {
-	buildReviewDirective,
-	DIFF_REL_PATH,
-	FILES_REL_PATH,
-	diffFilePath,
-} from "../src/directive.js";
-import {
-	leanAgentName,
 	LEAN_BUDGETS,
 	LEAN_GATE_AGENT,
+	leanAgentName,
 	resolveLeanBudgets,
 	withThinkingSuffix,
 } from "../src/lean-agents.js";
 import type { ReviewerSpec, ReviewTarget } from "../src/types.js";
+
+const CWD = "/tmp/pi-review-test-cwd";
+const WORKSPACE = "/tmp/pi-review-tgt-ws";
+const MANIFEST = "/tmp/pi-review-test-cwd/.pi/pi-review/runs/r1/manifest.json";
+const DIFF = "/tmp/pi-review-test-cwd/.pi/pi-review/runs/r1/change.diff";
+const DIMENSIONS = [
+	"bugbot",
+	"security-review",
+	"claude-md-compliance",
+	"code-comments",
+	"history-context",
+];
 
 function fakeTarget(overrides: Partial<ReviewTarget> = {}): ReviewTarget {
 	return {
@@ -29,143 +44,96 @@ function fakeReviewer(id: string): ReviewerSpec {
 	return { id, label: id, enabled: true, model: "inherit" };
 }
 
-const CWD = "/tmp/pi-review-test-cwd";
-const DIMENSIONS = ["bugbot", "security-review", "claude-md-compliance", "code-comments", "history-context"];
+function baseInput(overrides: Partial<Parameters<typeof buildReviewDirective>[0]> = {}) {
+	return {
+		target: fakeTarget(),
+		reviewers: DIMENSIONS.map(fakeReviewer),
+		gateModel: "anthropic/claude-haiku-4-5",
+		threshold: 8,
+		lite: false,
+		cwd: CWD,
+		workspacePath: WORKSPACE,
+		manifestPath: MANIFEST,
+		diffPath: DIFF,
+		...overrides,
+	};
+}
 
-describe("buildReviewDirective", () => {
+describe("buildReviewDirective — user-facing copy", () => {
 	const reviewers = DIMENSIONS.map(fakeReviewer);
 
-	test("fan-out: lean agents + budgets + single-wave rules + file list", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget(),
-			reviewers,
-			gateModel: "anthropic/claude-haiku-4-5",
-			gateThinking: "low",
-			threshold: 8,
-			lite: false,
-			cwd: CWD,
-		});
-		assert.match(d, /Step 1 — Obtain the change/);
-		assert.match(d, new RegExp(DIFF_REL_PATH.replace(/\./g, "\\.")));
-		assert.match(d, new RegExp(FILES_REL_PATH.replace(/\./g, "\\.")));
-		assert.match(d, /change-kind/);
-		assert.match(d, /Do not read, cat, or summarize the diff/);
-		assert.doesNotMatch(d, /\/tmp\/pi-review-change\.diff/);
-
-		assert.match(d, /exactly one/);
-		assert.match(d, /Do not retry/);
+	test("emits exactly one subagent call reference in the steps section", () => {
+		const d = buildReviewDirective(baseInput());
+		assert.match(d, /Call `subagent` \*\*exactly one\*\* time/);
+		assert.match(d, /Step 2 must be a \*\*single\*\* `subagent\(/);
 		assert.match(d, /never one call per reviewer/);
+		assert.match(d, /pi_review_report/);
+		const step2 = d.slice(d.indexOf("## Step 2"));
+		const calls = step2.match(/^subagent\(\{$/gm) ?? [];
+		assert.equal(calls.length, 1, "Step 2 must contain exactly one subagent({ }) call");
+	});
 
-		assert.match(d, /Step 2 — Run the review/);
-		// workflowScript API shape (pi-subagents ≥0.41). The script body is
-		// JSON-stringified inside the directive, so inner quotes appear as \\".
-		assert.match(d, /workflowScript:/);
-		assert.match(d, /runs\.all\(\[/);
-		assert.match(d, /runs\.run\(\\"gate\\"/);
+	test("uses a chatProgress value accepted by pi-subagents", () => {
+		const d = buildReviewDirective(baseInput());
+		const m = d.match(/chatProgress: "(auto|off|live-card)"/);
+		assert.ok(m, "must emit a valid chatProgress enum value");
+	});
+
+	test("chatProgress enum is not 'milestones' (PR #18689 regression)", () => {
+		const d = buildReviewDirective(baseInput());
+		assert.doesNotMatch(d, /chatProgress: "milestones"/);
+	});
+
+	test("top-level shape stays compatible with the workflowScript API", () => {
+		const d = buildReviewDirective(baseInput());
 		assert.match(d, /async: false/);
 		assert.match(d, /context: "fresh"/);
-		assert.match(d, /turnBudget: \{ maxTurns: 20, graceTurns: 2 \}/);
-		assert.match(d, /do not substitute builtin `reviewer`/);
-		// Legacy top-level inputs must NOT appear (they are rejected at runtime).
-		assert.doesNotMatch(d, /\breads:/);
-		assert.doesNotMatch(d, /tasks:\s*\[/);
-		assert.doesNotMatch(d, /concurrency:/);
-		assert.doesNotMatch(d, /outputMode: "file-only"/);
-		assert.doesNotMatch(d, /acceptance: false/);
-
-		for (const id of DIMENSIONS) {
-			// Inside the JSON-stringified workflowScript, quotes appear as \\".
-			assert.match(d, new RegExp(`agent: \\\\"${leanAgentName(id)}\\\\"`));
-		}
-		// Per-child tool budgets are injected onto each runs.all item.
-		assert.match(d, /toolBudget: \{ soft: 20, hard: 32 \}/);
-		assert.match(d, /toolBudget: \{ soft: 14, hard: 24 \}/);
-		assert.doesNotMatch(d, /agents\/bugbot\.md/);
-
-		// Gate is inlined inside the workflow script (no separate Step 3).
-		assert.doesNotMatch(d, /Step 3 — Gate/);
-		assert.match(d, new RegExp(`agent: \\\\"${LEAN_GATE_AGENT}\\\\"`));
-		assert.match(d, /model: \\"anthropic\/claude-haiku-4-5:low\\"/);
-		assert.match(d, /Threshold: 8/);
-		assert.match(d, /Reviewer findings are inlined below/);
-		assert.match(d, /Do not re-read the full diff/);
-		assert.match(d, /Step 3 — Report/);
+		assert.match(d, /timeoutMs: \d+/);
 	});
 
-	test("lite: one subagent max, no gate", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget(),
-			reviewers: [fakeReviewer("lite-review")],
-			gateModel: "anthropic/claude-haiku-4-5",
-			threshold: 8,
-			lite: true,
-			cwd: CWD,
-		});
-		assert.match(d, /exactly one/);
-		assert.match(d, new RegExp(`agent: \\\\"${leanAgentName("lite-review")}\\\\"`));
-		assert.match(d, /runs\.all\(\[/);
-		assert.doesNotMatch(d, /Step 3 — Gate/);
-		assert.match(d, /Step 3 — Report/);
-	});
-
-	test("injects user request", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget({ userContext: "focus on concurrency and secrets" }),
-			reviewers,
-			gateModel: "anthropic/claude-haiku-4-5",
-			threshold: 8,
-			lite: false,
-			cwd: CWD,
-		});
-		assert.match(d, /\*\*User request:\*\* focus on concurrency and secrets/);
-	});
-
-	test("PR target puts gh pr diff in step 1", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget({
-				kind: "pr",
-				label: "PR 99",
-				prRef: "https://github.com/o/r/pull/99",
-				hint: "",
+	test("Step 1 confirms plugin-prepared manifest + target workspace with real inline paths", () => {
+		const d = buildReviewDirective(
+			baseInput({
+				target: fakeTarget({ kind: "pr", label: "PR 99", prRef: "https://github.com/o/r/pull/99", hint: "" }),
 			}),
-			reviewers,
-			gateModel: "anthropic/claude-haiku-4-5",
-			threshold: 8,
-			lite: false,
-			cwd: CWD,
-		});
-		assert.match(d, /gh pr diff 'https:\/\/github\.com\/o\/r\/pull\/99'/);
-		assert.match(d, /git fetch origin/);
-		assert.match(d, /pull\/\$PR_NUM\/head/);
-		assert.match(d, new RegExp(diffFilePath(CWD).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+		);
+		assert.match(d, /has \*\*already\*\* cloned\/checked out the target repo/);
+		assert.ok(d.includes(MANIFEST));
+		assert.ok(d.includes(DIFF));
+		assert.ok(d.includes(WORKSPACE));
+		// No template placeholders survive.
+		assert.doesNotMatch(d, /\$\{TARGET_WORKSPACE\}/);
+		assert.doesNotMatch(d, /\$\{MANIFEST_PATH\}/);
 	});
 
-	test("local Step 1 fetches remote base before three-dot", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget(),
-			reviewers,
-			gateModel: "anthropic/claude-haiku-4-5",
-			threshold: 8,
-			lite: false,
-			cwd: CWD,
-		});
-		assert.match(d, /fetch the remote default branch first/);
-		assert.match(d, /git fetch origin "\$BASE"/);
-		assert.match(d, /origin\/\$BASE/);
-		assert.match(d, /diff-meta/);
+	test("Step 3 names the pi_review_report tool with runId + workflowReturn", () => {
+		const d = buildReviewDirective(baseInput());
+		assert.match(d, /pi_review_report/);
+		assert.match(d, /runId, workflowReturn/);
+		assert.match(d, /exactly once/);
 	});
 
-	test("budget override flows into turnBudget", () => {
-		const d = buildReviewDirective({
-			target: fakeTarget(),
-			reviewers,
-			gateModel: "anthropic/claude-haiku-4-5",
-			threshold: 8,
-			lite: false,
-			cwd: CWD,
-			budgets: resolveLeanBudgets({ turnBudget: { maxTurns: 24, graceTurns: 2 } }),
-		});
+	test("budget override flows into turnBudget line", () => {
+		const d = buildReviewDirective(
+			baseInput({ budgets: resolveLeanBudgets({ turnBudget: { maxTurns: 24, graceTurns: 2 } }) }),
+		);
 		assert.match(d, /turnBudget: \{ maxTurns: 24, graceTurns: 2 \}/);
+	});
+
+	test("hard rules preserve single-wave and no-retry guidance", () => {
+		const d = buildReviewDirective(baseInput());
+		assert.match(d, /Do not retry/);
+		assert.match(d, /Do not re-write or summarize findings in chat/);
+		assert.match(d, new RegExp(leanAgentName("bugbot")));
+	});
+
+	test("PR target copies PR ref into the directive", () => {
+		const d = buildReviewDirective(
+			baseInput({
+				target: fakeTarget({ kind: "pr", label: "PR 99", prRef: "https://github.com/o/r/pull/99" }),
+			}),
+		);
+		assert.match(d, /PR 99/);
 	});
 });
 
