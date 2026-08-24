@@ -7,6 +7,9 @@
  * copy that is NOT embedded in the JSON string.
  */
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 
 import { buildReviewDirective } from "../src/directive.js";
@@ -143,13 +146,50 @@ describe("lean helpers", () => {
 		assert.equal(LEAN_GATE_AGENT, "pi-review.gate");
 	});
 
-	test("default turnBudget is 20", () => {
-		assert.equal(LEAN_BUDGETS.turnBudget.maxTurns, 20);
+	test("default turnBudget is 26 (raised from 20 — field runs wrapped partial)", () => {
+		assert.equal(LEAN_BUDGETS.turnBudget.maxTurns, 26);
+		// The gate must be able to actually verify high-severity candidates.
+		assert.ok(LEAN_BUDGETS.gateTurnBudget.maxTurns >= 12, "gate turns >= 12");
+		assert.ok(LEAN_BUDGETS.gateToolBudget.soft >= 10, "gate tool budget soft >= 10");
 	});
 
 	test("withThinkingSuffix", () => {
 		assert.equal(withThinkingSuffix("anthropic/claude-haiku-4-5", "low"), "anthropic/claude-haiku-4-5:low");
 		assert.equal(withThinkingSuffix("anthropic/claude-haiku-4-5:medium", "low"), "anthropic/claude-haiku-4-5:low");
 		assert.equal(withThinkingSuffix("anthropic/claude-haiku-4-5", undefined), "anthropic/claude-haiku-4-5");
+	});
+});
+
+describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", () => {
+	/**
+	 * pi-subagents appends an Acceptance Contract to every child run and
+	 * expects a closing ```acceptance-report fence. Agents whose prompts end
+	 * with only "return JSON and stop" got meta acceptance: rejected on every
+	 * run (observed in the field). Each bundled agent must tell the model to
+	 * comply.
+	 */
+	const agentsDir = join(fileURLToPath(new URL(".", import.meta.url)), "..", "agents");
+	for (const name of [
+		"gate",
+		"lite-review",
+		"bugbot",
+		"security-review",
+		"conventions",
+		"code-comments",
+		"claude-md-compliance",
+		"history-context",
+	]) {
+		test(`${name}.md ends with acceptance-report compliance`, () => {
+			const body = readFileSync(join(agentsDir, `${name}.md`), "utf-8");
+			assert.match(body, /acceptance-report/, `${name}.md must mention acceptance-report`);
+		});
+	}
+
+	test("gate.md declares read-only role and verification duty", () => {
+		const body = readFileSync(join(agentsDir, "gate.md"), "utf-8");
+		assert.match(body, /^acceptanceRole: read-only$/m);
+		assert.match(body, /Verification duty/);
+		assert.match(body, /never score a candidate above 8 without your own verification evidence/i);
+		assert.doesNotMatch(body, /You do \*\*not\*\* have the full diff/);
 	});
 });

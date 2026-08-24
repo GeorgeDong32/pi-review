@@ -177,6 +177,9 @@ export interface ReportInput {
 		prRef?: string;
 		diffSha256: string;
 		workspacePath: string;
+		workspaceHeadSha?: string;
+		workspaceWarning?: string;
+		mode?: string;
 		docsOnly: boolean;
 		rulePaths: string[];
 		historyAvailable: boolean;
@@ -259,8 +262,20 @@ export function renderReport(report: BuiltReport): string {
 	if (report.manifest.prRef) {
 		lines.push(`- PR: ${report.manifest.prRef}`);
 	}
+	if (report.manifest.mode) {
+		lines.push(`- Diff mode: ${report.manifest.mode}`);
+	}
 	if (report.manifest.baseSha && report.manifest.headSha) {
 		lines.push(`- Base: ${report.manifest.baseSha.slice(0, 12)} · Head: ${report.manifest.headSha.slice(0, 12)}`);
+	}
+	if (report.manifest.workspaceHeadSha) {
+		const matched = !report.manifest.headSha || report.manifest.workspaceHeadSha === report.manifest.headSha;
+		lines.push(
+			`- Workspace HEAD: ${report.manifest.workspaceHeadSha.slice(0, 12)}${matched ? " (matches diff head)" : " (MISMATCH vs diff head)"}`,
+		);
+	}
+	if (report.manifest.workspaceWarning) {
+		lines.push(`- Workspace note: ${report.manifest.workspaceWarning}`);
 	}
 	lines.push(`- Diff SHA-256: ${report.manifest.diffSha256.slice(0, 16)}…`);
 	lines.push(`- Workspace: ${report.manifest.workspacePath}`);

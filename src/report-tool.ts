@@ -58,7 +58,7 @@ function adaptReviewer(so: unknown): ReviewerOutput {
 		coverage?: unknown;
 	};
 	const issues = Array.isArray(obj.issues)
-		? (obj.issues as Issue[]).filter(isIssueLike)
+		? (obj.issues as Issue[]).filter(isIssueLike).map(normalizeIssue)
 		: [];
 	return {
 		status: obj.status === "ok" || obj.status === "limited" || obj.status === "skipped"
@@ -74,6 +74,14 @@ function adaptReviewer(so: unknown): ReviewerOutput {
 
 function isIssueLike(v: unknown): v is Issue {
 	return !!v && typeof v === "object" && typeof (v as { file?: unknown }).file === "string";
+}
+
+/** Clamp / default an issue's confidence so downstream filters never see NaN. */
+function normalizeIssue(issue: Issue): Issue {
+	if (typeof issue.confidence === "number" && Number.isFinite(issue.confidence)) {
+		return { ...issue, confidence: Math.max(1, Math.min(10, Math.round(issue.confidence))) };
+	}
+	return { ...issue, confidence: 5 };
 }
 
 function isCoverage(v: unknown): v is ReviewerOutput["coverage"] {
@@ -219,6 +227,9 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 			prRef: manifest.prRef,
 			diffSha256: manifest.diffSha256,
 			workspacePath: manifest.workspacePath,
+			workspaceHeadSha: manifest.workspaceHeadSha,
+			workspaceWarning: manifest.workspaceWarning,
+			mode: manifest.mode,
 			docsOnly: manifest.docsOnly,
 			rulePaths: manifest.rulePaths,
 			historyAvailable: manifest.historyAvailable,

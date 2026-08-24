@@ -3,13 +3,15 @@
  * workspace + manifest so reviewer children point at the RIGHT repo.
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 
 import {
 	prepareRun,
+	pruneLegacyFlatArtifacts,
+	pruneStaleWorkspaces,
 	setReviewRunCmd,
 	resetReviewRunCmd,
 	loadManifestFor,
@@ -292,6 +294,133 @@ describe("prepareRun — lite + adaptive routing", () => {
 		const roster = reviewersForRouting(target, config, { docsOnly: true, rulePaths: [], historyAvailable: false });
 		assert.equal(roster.some((r) => r.id === "bugbot"), true);
 		assert.equal(roster.some((r) => r.id === "history-context"), true);
+	});
+});
+
+describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
+	const PR = "https://github.com/o/r/pull/33";
+
+	function ghFailing() {
+		return {
+			gh: () => ({ stdout: "", stderr: "gh unavailable", exitCode: 1 }),
+		};
+	}
+
+	test("fallback verifies FETCH_HEAD against headRefOid and uses it for the diff", async () => {
+		const cwd = setup();
+		let viewCalls = 0;
+		setReviewRunCmd(
+			fakeCmd({
+				gh: (args) => {
+					if (args[0] === "pr" && args[1] === "view") {
+						viewCalls++;
+						return {
+							stdout: JSON.stringify({ number: "33", baseRefName: "main", baseRefOid: "b0", headRefOid: "H1" }),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					return { stdout: "", stderr: "no diff", exitCode: 1 };
+				},
+				"git fetch": () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				"git rev-parse": (args) => {
+					// FETCH_HEAD matches the PR head; refs/remotes/origin/main resolves.
+					if (args.includes("FETCH_HEAD")) return { stdout: "H1\n", stderr: "", exitCode: 0 };
+					return { stdout: "mb0\n", stderr: "", exitCode: 0 };
+				},
+				"git merge-base": () => ({ stdout: "mb0\n", stderr: "", exitCode: 0 }),
+				"git diff": () => ({
+					stdout: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n",
+					stderr: "",
+					exitCode: 0,
+				}),
+			}),
+		);
+		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+		const prepared = await prepareRun({ cwd, input: PR });
+		assert.ok(prepared);
+		assert.equal(prepared!.manifest.mode, "git-pr-fallback");
+		assert.equal(prepared!.manifest.headSha, "H1");
+		assert.equal(prepared!.manifest.mergeBase, "mb0");
+		// 2 views: one from acquirePrDiff, one fresh from the git fallback —
+		// a mismatch retry would make it 3.
+		assert.equal(viewCalls, 2, "fresh metadata, no mismatch retry");
+	});
+
+	test("FETCH_HEAD mismatch after one retry fails loudly (no wrong-diff review)", async () => {
+		const cwd = setup();
+		setReviewRunCmd(
+			fakeCmd({
+				gh: (args) => {
+					if (args[0] === "pr" && args[1] === "view") {
+						return {
+							stdout: JSON.stringify({ number: "33", baseRefName: "main", headRefOid: "H1" }),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					return { stdout: "", stderr: "no", exitCode: 1 };
+				},
+				"git fetch": () => ({ stdout: "", stderr: "", exitCode: 0 }),
+				"git rev-parse": (args) => {
+					// The remote head keeps disagreeing with gh metadata.
+					if (args.includes("FETCH_HEAD")) return { stdout: "XXX\n", stderr: "", exitCode: 0 };
+					return { stdout: "mb0\n", stderr: "", exitCode: 0 };
+				},
+				"git merge-base": () => ({ stdout: "mb0\n", stderr: "", exitCode: 0 }),
+				"git diff": () => ({ stdout: "", stderr: "", exitCode: 0 }),
+			}),
+		);
+		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+		await assert.rejects(
+			() => prepareRun({ cwd, input: PR }),
+			/!= GitHub headRefOid .+ after retry/,
+		);
+	});
+
+	test("failed fetch throws instead of reusing a stale local ref", async () => {
+		const cwd = setup();
+		setReviewRunCmd(
+			fakeCmd({
+				...ghFailing(),
+				"git fetch": () => ({ stdout: "", stderr: "network down", exitCode: 128 }),
+			}),
+		);
+		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+
+		await assert.rejects(
+			() => prepareRun({ cwd, input: PR }),
+			/Not falling back to stale local refs/,
+		);
+	});
+});
+
+describe("cleanup mechanisms", () => {
+	test("pruneLegacyFlatArtifacts removes 0.5/0.6 flat files but not runs/", () => {
+		const cwd = setup();
+		const root = join(cwd, ".pi", "pi-review");
+		mkdirSync(join(root, "runs", "keepme"), { recursive: true });
+		writeFileSync(join(root, "change.diff"), "old");
+		writeFileSync(join(root, "changed-files.txt"), "old");
+		writeFileSync(join(root, "diff-meta.txt"), "old");
+		const removed = pruneLegacyFlatArtifacts(cwd);
+		assert.equal(removed.length, 3);
+		assert.equal(existsSync(join(root, "change.diff")), false);
+		assert.equal(existsSync(join(root, "runs", "keepme")), true, "runs/ dir must survive");
+	});
+
+	test("pruneStaleWorkspaces removes expired tmp clones only", () => {
+		const old = mkdtempSync(join(tmpdir(), "pi-review-ws-"));
+		const fresh = mkdtempSync(join(tmpdir(), "pi-review-ws-"));
+		const other = mkdtempSync(join(tmpdir(), "pi-review-run-"));
+		const day = 24 * 60 * 60 * 1000;
+		utimesSync(old, new Date(Date.now() - 2 * day), new Date(Date.now() - 2 * day));
+		const removed = pruneStaleWorkspaces();
+		assert.ok(removed.includes(old), "expired workspace pruned");
+		assert.ok(!removed.includes(fresh), "fresh workspace kept");
+		assert.ok(!removed.includes(other), "non-workspace tmp dirs untouched");
 	});
 });
 

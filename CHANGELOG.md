@@ -4,6 +4,82 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - 2026-08-25
+
+Post-mortem of the 2026-08 field reports (false positives, wrong diffs, gate
+rejections after pi-subagents upgrades). Root causes verified against
+CherryPR artifacts (17 PRs), 36 pi sessions, and the installed
+pi-subagents 0.55.0 source.
+
+### Fixed — upstream compatibility (pi-subagents 0.42→0.55)
+- **Gate no longer rejected at launch:** pi-subagents ≥0.55 classifies task
+  text for mutation intent and refuses read-only agents given
+  "implementation" tasks. The gate task contained the bare verb "modify"
+  ("lines the author did not modify") and got rejected with `Agent
+  'pi-review.gate' was given an implementation task…` (observed 2026-08-24,
+  which silently disabled gating). Every reviewer + gate task now carries a
+  blanket read-only declaration ("READ-ONLY task — review only. Do not write
+  any files. … Return findings only."), and `agents/gate.md` declares
+  `acceptanceRole: read-only`. Verified against the real installed
+  classifier: all tasks → `read-only`, `taskMayMutate=false`.
+- **Acceptance-contract compliance:** the runtime appends an Acceptance
+  Contract expecting a closing ```` ```acceptance-report ```` fence; our
+  agents ended with "return JSON and stop", so every run's acceptance meta
+  read `rejected`. All bundled agents now instruct compliance.
+- **Contract tests pin the upstream heuristics** (read-only classification
+  mirror, `chatProgress` enum, acceptance mention) so the next pi-subagents
+  release fails our tests first, not every `/review` in the field.
+
+### Fixed — diff correctness / stability
+- **No more stale-ref fallback:** the git fallback previously fetched
+  `pull/N/head` into a named branch and — when that fetch failed — silently
+  reused whatever branch was already there (2026-08-12: an 8583-line diff
+  for a 3-file PR, two phantom blockers, `request_changes` on a clean PR).
+  It now refreshes the base remote-tracking ref with a forced fetch, fetches
+  the PR head into `FETCH_HEAD` only, verifies it against `gh pr view`'s
+  `headRefOid` (one retry on mismatch), and **fails loudly** instead of
+  reviewing the wrong commits.
+- **Workspace/diff SHA reconciliation:** the target workspace checks out the
+  PR head via `FETCH_HEAD` (detached) and its landed HEAD is compared with
+  the diff's head SHA; a force-push race retries the clone once, then stops.
+  `manifest.json` records `workspaceHeadSha` and the report shows whether it
+  matches the diff head.
+- **PR clone uses `gh repo clone` first** (private repos ride the gh
+  credential) with plain-https fallback; a failed PR clone is now a hard
+  error — the old silent fallback to the user's (possibly 247-commits
+  stale) cwd produced the "diff@new, files@old" evidence split that drove
+  false positives.
+- **Cleanup:** scratch workspace clones older than 24h are pruned from the
+  tmpdir on every run; legacy v0.5/0.6 flat artifacts
+  (`.pi/pi-review/{change.diff,changed-files.txt,change-kind.txt,diff-meta.txt}`)
+  are removed once per run (they were repeatedly misread as current-run
+  inputs). Cleanup helpers no longer use ESM-`require()` (silently dead
+  under some loaders).
+- `git ls-remote --heads origin pull/N/head` (which can never match
+  `refs/pull/*`) removed along with the code path it served.
+
+### Fixed — gate accuracy
+- **Gate can finally verify:** it receives the diff path + target workspace
+  cwd, its budgets rose from 6 turns / 5 soft tools to 12 turns / 10 soft
+  tools, and the wall clock from 10 to 15 minutes.
+- **No silent drops of unverifiable majors:** the gate must keep
+  blocker/major candidates it cannot verify at the reviewer's original
+  confidence with an `unverified:` reason (field: two real majors killed
+  2026-08-20; a confidence-7 real issue killed 2026-08-21).
+- **No confidence amplification without evidence:** never score above 8
+  without the gate's own tool-verified evidence (field: an unverifiable
+  "hand-edited generated file" claim became a confidence-10 blocker).
+- **Missing confidence no longer means dropped:** issues arriving without a
+  usable confidence default to a neutral 5 at ingestion (previously
+  `undefined >= threshold` filtered out every such issue).
+- Reviewer default turn budget 20→26 (field runs kept wrapping up partial
+  at the soft limit).
+
+### Migration
+- None. Config schema unchanged; behavior differences are all in-plugin.
+
+[0.7.1]: https://github.com/GeorgeDong32/pi-review/compare/v0.7.0...v0.7.1
+
 ## [0.7.0] - 2026-08-16
 
 ### Added

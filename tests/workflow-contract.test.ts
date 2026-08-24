@@ -17,7 +17,7 @@ import { strict as assert } from "node:assert";
 import { describe, test } from "node:test";
 
 import { buildReviewDirective } from "../src/directive.js";
-import { LEAN_BUDGETS, leanAgentName } from "../src/lean-agents.js";
+import { FALSE_POSITIVE_GUIDANCE, LEAN_BUDGETS, leanAgentName } from "../src/lean-agents.js";
 import type { ReviewerSpec, ReviewTarget } from "../src/types.js";
 
 const CWD = "/tmp/pi-review-contract";
@@ -114,7 +114,11 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 	test("exactly one subagent tool call (no per-reviewer fallback path)", () => {
 		const d = buildReviewDirective(baseInput());
 		const script = scriptOf(d);
-		assert.match(script, /^return \{/);
+		// The reviewer array must be bound to a local before the return
+		// object — the gate IIFE and `reviewersShaped` reference it (a bare
+		// object property would throw `reviewers is not defined`).
+		assert.match(script, /^const reviewers = await runs\.all\(\[/);
+		assert.match(script, /return \{\n  reviewers,/);
 		const runsAll = (script.match(/runs\.all\(\[/g) ?? []).length;
 		assert.equal(runsAll, 1, "workflowScript must invoke runs.all once");
 		const runsRunGate = (script.match(/runs\.run\('gate'/g) ?? []).length;
@@ -129,7 +133,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.match(d, /async: false/);
 		assert.match(d, /context: "fresh"/);
 		assert.match(d, /timeoutMs: \d+/);
-		assert.match(d, /workflowScript: "return \\?\{/);
+		assert.match(d, /workflowScript: "const reviewers = await runs\.all\(\[/);
 	});
 
 	test("P0: the generated workflowScript parses as valid JS (unquoted-path regression)", () => {
@@ -210,6 +214,45 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.doesNotMatch(allBlock, /JSON\.parse\(result\.output/);
 	});
 
+	test("RUNTIME: evaluating the script with stub runs returns the full object (no ReferenceError)", async () => {
+		// Real failure: the old script used `return { reviewers: await runs.all(...) }`
+		// which never bound a `reviewers` variable, so the gate IIFE and
+		// `reviewersShaped` threw `ReferenceError: reviewers is not defined`
+		// and the subagent harness surfaced it as a null workflow return.
+		const d = buildReviewDirective(baseInput());
+		const script = scriptOf(d);
+		const stubOutput = (key: string, status: string) => ({
+			key,
+			ok: true,
+			error: undefined,
+			structuredOutput: {
+				status,
+				issues: [],
+				summary: `stub ${key}`,
+				coverage: { filesChecked: ["src/directive.ts"], commandsRun: [], limitations: [] },
+			},
+			output: "",
+		});
+		const runs = {
+			all: async () => defaultReviewers().map((r) => stubOutput(r.id, r.id === "history-context" ? "skipped" : "ok")),
+			run: async (_key: string) => ({
+				ok: true,
+				error: undefined,
+				structuredOutput: { status: "ok", verdict: "approve", issues: [], dispositions: [], reason: "stub" },
+				output: "",
+			}),
+		};
+		const fn = new Function("runs", `return (async () => {\n${script}\n})();`); // eslint-disable-line no-new-func
+		const result = await fn(runs);
+		assert.ok(result && typeof result === "object", "script must return an object");
+		assert.ok(Array.isArray(result.reviewers), "reviewers must be an array");
+		assert.equal(result.reviewers.length, defaultReviewers().length);
+		assert.ok(result.gate && typeof result.gate === "object", "gate must be an object");
+		assert.equal(result.gate.structuredOutput.verdict, "approve");
+		assert.ok(Array.isArray(result.reviewersShaped), "reviewersShaped must be an array");
+		assert.equal(result.reviewersShaped.length, defaultReviewers().length);
+	});
+
 	test("gate inputs are reviewer structuredOutput objects (not Markdown blocks)", () => {
 		const d = buildReviewDirective(baseInput());
 		const script = scriptOf(d);
@@ -262,6 +305,75 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 			assert.match(script, new RegExp(`key: "${id}"`));
 		}
 		assert.doesNotMatch(script, /agent: "reviewer"/);
+	});
+});
+
+describe("pi-subagents ≥0.55 read-only task classification", () => {
+	/**
+	 * Mirror of pi-subagents' task-intent classifier (src/runs/shared/
+	 * task-intent.ts): a task with a blanket read-only declaration is
+	 * classified read-only, which (a) lets a read-only agent (gate:
+	 * `tools: read`) launch at all — 0.55.0 rejects "implementation task +
+	 * no mutation-capable tools" — and (b) keeps acceptance at the lightweight
+	 * attested level. If pi-subagents changes these heuristics, update the
+	 * mirror AND re-verify against the installed package.
+	 */
+	const REVIEW_ONLY = [
+		/\breview only\b/i,
+		/\bsuggest fixes only\b/i,
+		/\bonly return findings\b/i,
+		/\breturn findings only\b/i,
+	];
+	const NO_EDIT_PROHIBITION =
+		/\b(?:do not|don't|must not)\s+(?:edit|modify|write(?:\s+to)?|touch|change)\b((?:(?!\b(?:but|and|then)\b)[^.;,:!?\n–—-])*)/gi;
+	const GENERIC_PROHIBITION_OBJECT =
+		/^\s*(?:(?:any|all|the|these|those|your|our|existing|project|product|source|sources|config|configs|repo|repository)[\s/,-]*)*(?:files?|code|codebase|sources?|anything|repo(?:sitory)?)?\s*$/i;
+
+	function isBlankReadOnly(task: string): boolean {
+		if (REVIEW_ONLY.some((p) => p.test(task))) return true;
+		NO_EDIT_PROHIBITION.lastIndex = 0;
+		let m: RegExpExecArray | null;
+		while ((m = NO_EDIT_PROHIBITION.exec(task)) !== null) {
+			if (GENERIC_PROHIBITION_OBJECT.test(m[1] ?? "")) return true;
+		}
+		return false;
+	}
+
+	/** Extract every `task: "..."` JSON string literal from the script. */
+	function taskLiteralsOf(script: string): string[] {
+		const out: string[] = [];
+		const re = /(?:task: |const gateTask = )("(?:\\.|[^"\\])*")/g;
+		let m: RegExpExecArray | null;
+		while ((m = re.exec(script)) !== null) out.push(JSON.parse(m[1]!));
+		return out;
+	}
+
+	test("gate + reviewer tasks are blanket read-only (gate never rejected at launch)", () => {
+		const d = buildReviewDirective(baseInput());
+		const script = scriptOf(d);
+		const tasks = taskLiteralsOf(script);
+		// One static reviewer task per reviewer + one gate task prefix.
+		assert.ok(tasks.length >= defaultReviewers().length + 1, `expected >= ${defaultReviewers().length + 1} task literals, got ${tasks.length}`);
+		for (const t of tasks) {
+			assert.ok(isBlankReadOnly(t), `task must carry a blanket read-only declaration: ${t.slice(0, 90)}…`);
+		}
+	});
+
+	test("gate task carries the verification duty + anti-amplification rules", () => {
+		const d = buildReviewDirective(baseInput());
+		const script = scriptOf(d);
+		const gateLiteral = script.slice(script.indexOf("const gateTask = "));
+		assert.match(gateLiteral, /The full diff is at/);
+		assert.match(gateLiteral, /Never raise a candidate above 8 without your own verification evidence/);
+		assert.match(gateLiteral, /do NOT silently drop it/);
+		assert.match(gateLiteral, /unverified:/);
+	});
+
+	test("FALSE_POSITIVE_GUIDANCE carries no bare write verbs (the 'did not modify' regression)", () => {
+		// Real failure: "Pre-existing issues on lines the author did not
+		// modify" — the bare "modify" hit GENERAL_IMPLEMENTATION_PATTERNS and
+		// got the read-only gate rejected by pi-subagents 0.55.0.
+		assert.doesNotMatch(FALSE_POSITIVE_GUIDANCE, /\b(implement|edit|modify|refactor|update|remove|replace|delete|create)\b/i);
 	});
 });
 

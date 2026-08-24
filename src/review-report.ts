@@ -8,7 +8,15 @@
  */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -45,6 +53,10 @@ export interface RunManifest {
 	mergeBase?: string;
 	/** Absolute path to the prepared target workspace. */
 	workspacePath: string;
+	/** HEAD SHA actually checked out in the workspace, when determinable. */
+	workspaceHeadSha?: string;
+	/** Non-fatal workspace prep note surfaced in the report. */
+	workspaceWarning?: string;
 	/** Absolute path to the run directory (manifest + diff + history live here). */
 	runDir: string;
 	createdAt: number;
@@ -93,7 +105,7 @@ export function pruneStaleRuns(cwd: string, now = Date.now()): string[] {
 
 function safeListDir(p: string): string[] {
 	try {
-		return require("node:fs").readdirSync(p);
+		return readdirSync(p);
 	} catch {
 		return [];
 	}
@@ -102,7 +114,7 @@ void safeListDir; // keep tree-shaker honest
 
 function safeStat(p: string): { mtimeMs: number } | null {
 	try {
-		return require("node:fs").statSync(p);
+		return statSync(p);
 	} catch {
 		return null;
 	}
@@ -204,8 +216,8 @@ export function discoverRulePathsLocal(cwd: string): string[] {
 	}
 	for (const rulesDir of [join(cwd, ".pi", "rules"), join(cwd, ".agents", "rules")]) {
 		if (!existsSync(rulesDir)) continue;
-		try {
-			const list = require("node:fs").readdirSync(rulesDir) as string[];
+	try {
+		const list = readdirSync(rulesDir) as string[];
 			for (const entry of list) {
 				if (typeof entry === "string" && entry.endsWith(".md")) {
 					found.push(

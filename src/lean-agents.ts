@@ -43,14 +43,19 @@ export interface LeanBudgetSpec {
 	timeoutMs: number;
 }
 
-/** Defaults (v0.5.2): more headroom; shallow prompts keep real usage lower. */
+/**
+ * Defaults (v0.7.1): reviewers 20→26 turns (field runs kept wrapping up
+ * partial at 20); the gate 6→12 turns / 5→10 soft tools — it now carries a
+ * verification duty on high-severity candidates and physically could not
+ * verify anything under the old budget. Wall clock 10→15 min to match.
+ */
 export const LEAN_BUDGETS: LeanBudgetSpec = {
-	turnBudget: { maxTurns: 20, graceTurns: 2 },
+	turnBudget: { maxTurns: 26, graceTurns: 2 },
 	defaultToolBudget: { soft: 20, hard: 32 },
 	historyToolBudget: { soft: 14, hard: 24 },
-	gateTurnBudget: { maxTurns: 6, graceTurns: 1 },
-	gateToolBudget: { soft: 5, hard: 10 },
-	timeoutMs: 600_000,
+	gateTurnBudget: { maxTurns: 12, graceTurns: 2 },
+	gateToolBudget: { soft: 10, hard: 16 },
+	timeoutMs: 900_000,
 };
 
 export function toolBudgetForReviewer(id: string): ToolBudgetSpec {
@@ -83,9 +88,15 @@ export function withThinkingSuffix(model: string, thinking?: string): string {
 	return `${model}:${thinking}`;
 }
 
-/** Shared false-positive list (injected once into the directive). */
+/**
+ * Shared false-positive list (injected once into the directive).
+ * Wording constraint: this text is embedded verbatim in the gate task, which
+ * pi-subagents classifies for read-only vs implementation intent — keep it
+ * free of bare write verbs (modify/edit/implement/…) outside explicit
+ * prohibitions, or the read-only gate gets rejected at launch.
+ */
 export const FALSE_POSITIVE_GUIDANCE = [
-	"Pre-existing issues on lines the author did not modify",
+	"Pre-existing issues on lines untouched by this change",
 	"Pedantic nitpicks a senior engineer would not call out",
 	"Issues a linter, typechecker, or CI would catch",
 	"Generic quality (missing tests/docs) unless a project rule explicitly requires it",

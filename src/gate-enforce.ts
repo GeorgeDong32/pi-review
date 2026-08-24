@@ -36,11 +36,11 @@ export function dedupeIssues(issues: Issue[]): Issue[] {
 			best.set(key, issue);
 			continue;
 		}
-		if (issue.confidence > prev.confidence) {
+		if (confidenceOf(issue) > confidenceOf(prev)) {
 			best.set(key, issue);
 			continue;
 		}
-		if (issue.confidence < prev.confidence) continue;
+		if (confidenceOf(issue) < confidenceOf(prev)) continue;
 		if (severityRank(issue.severity) > severityRank(prev.severity)) {
 			best.set(key, issue);
 			continue;
@@ -57,7 +57,19 @@ export function dedupeIssues(issues: Issue[]): Issue[] {
 
 export function filterByThreshold(issues: Issue[], threshold: number): Issue[] {
 	const floor = Math.max(0, Math.min(10, Math.floor(threshold)));
-	return issues.filter((i) => i.confidence >= floor);
+	// Issues without a usable confidence (legacy/shape-adapted output) default
+	// to a neutral 5 instead of being silently dropped (`undefined >= floor`
+	// is false, which used to kill every such issue — a systematic
+	// false-negative source observed in the field).
+	return issues.filter((i) => confidenceOf(i) >= floor);
+}
+
+/** Neutral-midpoint fallback for issues that arrived without a score. */
+export function confidenceOf(issue: Issue): number {
+	if (typeof issue.confidence === "number" && Number.isFinite(issue.confidence)) {
+		return Math.max(1, Math.min(10, issue.confidence));
+	}
+	return 5;
 }
 
 /**

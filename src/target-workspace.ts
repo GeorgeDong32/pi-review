@@ -4,18 +4,22 @@
  *
  * Real failure (PR #18689): reviewers shared cwd with the plugin repo, so
  * `history-context` and `code-comments` had no relevant code. The plugin now
- *   - for PRs: shallow-clones `owner/repo` into a scratch dir, checks out
- *     the PR head via `gh pr checkout` (falls back to a git fetch of
- *     `pull/<n>/head`).
+ *   - for PRs: shallow-clones `owner/repo` into a scratch dir (gh first so
+ *     private repos use the gh credential), checks out the PR head from
+ *     FETCH_HEAD, and verifies the landed SHA against the diff's head SHA.
  *   - for local-git dirty: uses the user's cwd directly (already correct).
  *   - for local-git clean vs default branch: uses the user's cwd after
  *     `git fetch origin <base>`.
  *
  * The workspace is **read-only by convention**: reviewers are not given
  * write tools and the plugin never modifies it.
+ *
+ * A failed PR clone is a hard error (not a silent fallback to the user's
+ * cwd): a fresh GitHub diff plus a stale local checkout is the #1 false
+ * positive source observed in the field (diff@new, files@old).
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -70,9 +74,7 @@ export function allocateWorkspaceRoot(prefix = "pi-review-ws"): string {
 /** Best-effort cleanup; ignores errors. */
 export function removeWorkspaceRoot(path: string): void {
 	try {
-		// Avoid pulling in the FS module at top level.
-		const fs = require("node:fs") as typeof import("node:fs");
-		fs.rmSync(path, { recursive: true, force: true });
+		rmSync(path, { recursive: true, force: true });
 	} catch {
 		/* ignore */
 	}
@@ -87,6 +89,8 @@ export interface WorkspaceResult {
 	warning?: string;
 	/** Whether we cloned (true) or reused the user cwd (false). */
 	cloned: boolean;
+	/** HEAD SHA landed in the workspace, when determinable. */
+	workspaceHeadSha?: string;
 }
 
 /**
@@ -95,7 +99,12 @@ export interface WorkspaceResult {
  */
 export async function prepareWorkspace(input: {
 	cwd: string;
-	target: { kind: "pr" | "diff-file" | "local-git"; prRef?: string };
+	target: {
+		kind: "pr" | "diff-file" | "local-git";
+		prRef?: string;
+		/** Diff-side head SHA to verify the checkout against. */
+		expectedHeadSha?: string;
+	};
 }): Promise<WorkspaceResult> {
 	const { cwd, target } = input;
 
@@ -133,43 +142,76 @@ export async function prepareWorkspace(input: {
 	const cloneDir = join(root, `${parsed.repo}-${parsed.number}`);
 	mkdirSync(cloneDir, { recursive: true });
 
-	// Clone (depth 1 is enough — git fetch later deepens history for blame).
-	const clone = await _runCmd(
-		"git",
-		["clone", "--depth", "50", `https://github.com/${parsed.owner}/${parsed.repo}.git`, cloneDir],
+	// Clone (gh first so private repos ride the gh credential; plain https
+	// fallback for anonymous/public setups). depth 50 keeps history-context
+	// usable without a full clone.
+	const url = `https://github.com/${parsed.owner}/${parsed.repo}.git`;
+	const ghClone = await _runCmd(
+		"gh",
+		["repo", "clone", `${parsed.owner}/${parsed.repo}`, cloneDir, "--", "--depth", "50"],
 		{ cwd: root },
 	);
+	const clone = ghClone.exitCode === 0
+		? ghClone
+		: await _runCmd("git", ["clone", "--depth", "50", url, cloneDir], { cwd: root });
 	if (clone.exitCode !== 0) {
 		removeWorkspaceRoot(root);
-		return {
-			workspacePath: cwd,
-			historyAvailable: false,
-			cloned: false,
-			warning: `git clone failed (${clone.stderr.trim().slice(0, 200)}) — reviewers will see only the diff.`,
-		};
+		throw new Error(
+			`pi-review: could not clone ${parsed.owner}/${parsed.repo} (${(ghClone.stderr || clone.stderr).trim().slice(0, 200)}). A fresh diff over a stale local checkout produces false positives, so the review stops here — check gh auth / network and re-run.`,
+		);
 	}
 
-	// Fetch the PR head.
+	// Fetch the PR head into FETCH_HEAD and detach onto it (no named branch →
+	// nothing stale can survive between runs).
 	const headFetch = await _runCmd(
 		"git",
-		["fetch", "origin", `pull/${parsed.number}/head:refs/heads/pr-${parsed.number}`, "--quiet"],
+		["fetch", "origin", `pull/${parsed.number}/head`, "--quiet"],
 		{ cwd: cloneDir },
 	);
-	const headCheckout = headFetch.exitCode === 0
-		? await _runCmd("git", ["checkout", `pr-${parsed.number}`], { cwd: cloneDir })
-		: { exitCode: 1, stdout: "", stderr: "fetch head failed" };
-
+	if (headFetch.exitCode !== 0) {
+		removeWorkspaceRoot(root);
+		throw new Error(
+			`pi-review: git fetch pull/${parsed.number}/head failed (${headFetch.stderr.trim().slice(0, 200)}) — aborting instead of reviewing a mismatched checkout.`,
+		);
+	}
+	const fetchHead = (await _runCmd("git", ["rev-parse", "FETCH_HEAD"], { cwd: cloneDir })).stdout.trim();
+	if (
+		target.expectedHeadSha &&
+		fetchHead &&
+		fetchHead !== target.expectedHeadSha
+	) {
+		// One refetch — a force-push may have raced the clone.
+		const retry = await _runCmd(
+			"git",
+			["fetch", "origin", `pull/${parsed.number}/head`, "--quiet"],
+			{ cwd: cloneDir },
+		);
+		const retryHead = retry.exitCode === 0
+			? (await _runCmd("git", ["rev-parse", "FETCH_HEAD"], { cwd: cloneDir })).stdout.trim()
+			: "";
+		if (retryHead && retryHead !== target.expectedHeadSha) {
+			removeWorkspaceRoot(root);
+			throw new Error(
+				`pi-review: PR ${parsed.number} head moved to ${retryHead.slice(0, 12)} while the diff was captured at ${target.expectedHeadSha.slice(0, 12)} — re-run /review to get a consistent pair.`,
+			);
+		}
+	}
+	const headCheckout = await _runCmd("git", ["checkout", "--detach", "FETCH_HEAD"], { cwd: cloneDir });
 	if (headCheckout.exitCode !== 0) {
 		removeWorkspaceRoot(root);
-		return {
-			workspacePath: cwd,
-			historyAvailable: false,
-			cloned: false,
-			warning: `git fetch pull/${parsed.number}/head failed — reviewers will see only the diff.`,
-		};
+		throw new Error(
+			`pi-review: checkout of PR ${parsed.number} head failed (${headCheckout.stderr.trim().slice(0, 200)}).`,
+		);
 	}
 
-	return { workspacePath: cloneDir, historyAvailable: true, cloned: true };
+	const workspaceHeadSha = await safeHead(cloneDir);
+	return { workspacePath: cloneDir, historyAvailable: true, cloned: true, workspaceHeadSha };
+}
+
+async function safeHead(cwd: string): Promise<string | undefined> {
+	const r = await _runCmd("git", ["rev-parse", "HEAD"], { cwd });
+	if (r.exitCode !== 0) return undefined;
+	return r.stdout.trim() || undefined;
 }
 
 async function isGitRepo(cwd: string): Promise<boolean> {
@@ -190,11 +232,8 @@ export function writeWorkspaceMarker(workspacePath: string, payload: Record<stri
 /** Quiet helper to remove the marker when the workspace is torn down. */
 export function clearWorkspaceMarker(workspacePath: string): void {
 	try {
-		const fs = require("node:fs") as typeof import("node:fs");
-		fs.unlinkSync(join(workspacePath, ".pi-review-meta.json"));
+		rmSync(join(workspacePath, ".pi-review-meta.json"), { force: true });
 	} catch {
 		/* ignore */
 	}
 }
-
-void existsSync;

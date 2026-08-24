@@ -54,6 +54,20 @@ describe("filterByThreshold", () => {
 		assert.equal(out.length, 1);
 		assert.equal(out[0]!.file, "b.ts");
 	});
+
+	test("missing confidence defaults to neutral 5, not silently dropped", () => {
+		// Field regression: shape-adapted issues arrived without confidence and
+		// `undefined >= floor` filtered out every one of them — a systematic
+		// false-negative source (real majors killed).
+		const noConf = {
+			...issue({ file: "a.ts", confidence: 9, severity: "major" }),
+			confidence: undefined,
+		} as unknown as import("../src/types.js").Issue;
+		const out = filterByThreshold([noConf], 8);
+		assert.equal(out.length, 0, "neutral 5 is still below floor 8");
+		const outLowFloor = filterByThreshold([noConf], 5);
+		assert.equal(outLowFloor.length, 1, "neutral 5 survives a floor of 5");
+	});
 });
 
 describe("computeVerdict", () => {

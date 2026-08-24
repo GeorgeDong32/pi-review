@@ -227,15 +227,27 @@ export function buildWorkflowScript(input: {
 	const reviewerSchemaLiteral = serializeSchemaForJs(REVIEWER_OUTPUT_SCHEMA);
 	const gateSchemaLiteral = serializeSchemaForJs(GATE_OUTPUT_SCHEMA);
 
-	const lines: string[] = [];
-	lines.push("return {");
+	// Blanket read-only declaration. pi-subagents classifies each task text for
+	// mutation intent: with a generic-object prohibition ("do not write any
+	// files") plus "review only"/"return findings only", the task is
+	// unambiguously read-only, so a read-only agent (gate: tools read) is never
+	// rejected by the implementation-tool contract, and acceptance stays at the
+	// lightweight attested level instead of "risky write-capable".
+	const READ_ONLY_PREFIX =
+		"READ-ONLY task — review only. Do not write any files. Do not edit files. Return findings only.";
 
-	// ---- runs.all reviewers ---------------------------------------------
-	lines.push("  reviewers: await runs.all([");
+	const lines: string[] = [];
+	// Bind the reviewer array to a local FIRST: the gate IIFE and
+	// `reviewersShaped` below both reference `reviewers`, and a bare object
+	// property (`return { reviewers: ... }`) does NOT create a variable
+	// binding — that produced `ReferenceError: reviewers is not defined` at
+	// runtime (silently surfaced as a null workflow return).
+	lines.push("const reviewers = await runs.all([");
 	for (const r of reviewers) {
 		const tb = LEAN_BUDGETS.defaultToolBudget; // resolved below per-id
 		const tbForId = r.id === "history-context" ? LEAN_BUDGETS.historyToolBudget : tb;
 		const taskParts = [
+			READ_ONLY_PREFIX,
 			`Read ${JSON.stringify(diffPath)} as the change. Also read ${JSON.stringify(manifestPath)} for change-profile (docsOnly, file list, rule file paths). Do not re-fetch via gh/git.`,
 			`Your cwd is the target workspace (${JSON.stringify(workspacePath)}). Run all read/grep/git from there.`,
 			"Stay within budgets; return your findings as structuredOutput matching the REVIEWER_SCHEMA and stop.",
@@ -286,15 +298,22 @@ export function buildWorkflowScript(input: {
 		lines.push(`      outputSchema: ${reviewerSchemaLiteral},`);
 		lines.push("    },");
 	}
-	lines.push("  ]),");
+	lines.push("]);");
+	lines.push("");
+	lines.push("return {");
+	lines.push("  reviewers,");
 
 	// ---- gate ----------------------------------------------------------
 	if (!lite) {
 		const gateTask = [
+			READ_ONLY_PREFIX,
 			`Synthesize reviewer findings for ${targetLabel}.`,
+			`The full diff is at ${JSON.stringify(diffPath)} and your cwd is the target workspace — you CAN and SHOULD verify candidates yourself.`,
 			`Threshold ${threshold}: drop candidates with finalConfidence < ${threshold}.`,
 			`Inputs are reviewer structuredOutput objects (each has status, issues[].fingerprint, coverage).`,
-			`Re-score every candidate 1–10 with explicit verification on high-severity ones (blocker/major). Do not copy reviewer confidence verbatim.`,
+			`Re-score every candidate 1–10. For each blocker/major candidate, first try to verify it by reading the diff hunk and the touched file in the workspace; state what you checked in the disposition reason.`,
+			`Never raise a candidate above 8 without your own verification evidence from the diff or workspace files.`,
+			`If you cannot verify a blocker/major candidate (missing context, truncated diff), do NOT silently drop it: keep it at the reviewer's original confidence, prefix the reason with "unverified:", and let the human decide.`,
 			`Every candidate must appear in dispositions with decision (kept | dropped | merged), originalConfidence, finalConfidence, sourceReviewers, reason.`,
 			verdictPolicy === "legacy"
 				? `Verdict (legacy): request_changes if any blocker OR >=3 majors; approve if no blocker/major; else comment.`

@@ -11,7 +11,8 @@
  * This replaces the old "main agent obtains the diff itself" pattern that
  * silently failed on cross-repo PRs.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DEFAULT_CONFIG, loadConfig, resolveModel } from "./config.js";
@@ -19,6 +20,7 @@ import { buildReviewDirective } from "./directive.js";
 import { extractPrRef } from "./pr-ref.js";
 import {
 	RunManifest,
+	WORKSPACE_TTL_MS,
 	discoverRulePathsLocal,
 	ensureRunDir,
 	generateRunId,
@@ -64,6 +66,8 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 	if (!target) return null;
 
 	pruneStaleRuns(cwd);
+	pruneLegacyFlatArtifacts(cwd);
+	pruneStaleWorkspaces();
 
 	const runId = generateRunId();
 	const runDir = ensureRunDir(cwd, runId);
@@ -71,10 +75,25 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 	const diffResult = await acquireDiff(cwd, target, runDir);
 	const changedFiles = parseChangedFilesFromDiff(diffResult.diff);
 	const rulePaths = discoverRulePathsLocal(cwd);
-	const workspaceResult = await prepareWorkspace({
+	// Pass the diff's head SHA so the workspace checkout can verify it landed
+	// on the same commit (guards the force-push-between-calls TOCTOU window).
+	let workspaceResult = await prepareWorkspace({
 		cwd,
-		target: { kind: target.kind, prRef: target.prRef },
+		target: { kind: target.kind, prRef: target.prRef, expectedHeadSha: diffResult.headSha },
 	});
+	if (workspaceResult.cloned && diffResult.headSha && workspaceResult.workspaceHeadSha &&
+		workspaceResult.workspaceHeadSha !== diffResult.headSha) {
+		// Retry once — a force-push may have raced the first clone.
+		workspaceResult = await prepareWorkspace({
+			cwd,
+			target: { kind: target.kind, prRef: target.prRef, expectedHeadSha: diffResult.headSha },
+		});
+		if (workspaceResult.workspaceHeadSha && workspaceResult.workspaceHeadSha !== diffResult.headSha) {
+			throw new Error(
+				`pi-review: workspace HEAD ${workspaceResult.workspaceHeadSha.slice(0, 12)} does not match diff head ${diffResult.headSha.slice(0, 12)} — the PR moved during preparation; re-run /review.`,
+			);
+		}
+	}
 
 	const manifest: RunManifest = {
 		runId,
@@ -92,6 +111,8 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		headSha: diffResult.headSha,
 		mergeBase: diffResult.mergeBase,
 		workspacePath: workspaceResult.workspacePath,
+		workspaceHeadSha: workspaceResult.workspaceHeadSha,
+		workspaceWarning: workspaceResult.warning,
 		runDir,
 		createdAt: Date.now(),
 	};
@@ -220,35 +241,81 @@ async function acquirePrDiff(
 		};
 	}
 
-	const parsed = parsePrRepo(prRef);
-	const number = prMeta?.number ?? parsed?.number ?? "";
-	const base = prMeta?.baseRefName ?? "main";
-	const headSha =
-		prMeta?.headRefOid ??
-		(await safeHeadFromPull(cwd, number));
+	return acquirePrDiffViaGit(cwd, prRef, runDir, 0);
+}
 
-	const fetch = await _runCmd(
-		"git",
-		["fetch", "origin", `pull/${number}/head:refs/heads/pr-${number}`, "--quiet"],
+/**
+ * Git fallback when `gh pr diff` is unavailable.
+ *
+ * Hardening (post-mortem of the 2026-08-12 incident where a stale local ref
+ * produced an 8583-line diff for a 3-file PR):
+ *   - refresh the base remote-tracking ref with a forced fetch BEFORE
+ *     computing the merge-base (a stale origin/main skews the whole diff);
+ *   - fetch the PR head into FETCH_HEAD only — never a named branch, so a
+ *     previously-created ref can never be silently reused;
+ *   - verify the fetched head matches `gh pr view`'s headRefOid; on mismatch
+ *     (PR force-pushed between calls) retry once, then fail loudly instead
+ *     of reviewing the wrong commits.
+ */
+async function acquirePrDiffViaGit(
+	cwd: string,
+	prRef: string,
+	runDir: string,
+	attempt: number,
+): Promise<DiffAcquisitionResult> {
+	const view = await _runCmd(
+		"gh",
+		["pr", "view", prRef, "--json", "number,baseRefName,baseRefOid,headRefOid"],
 		{ cwd },
 	);
-	const hasHead = (await _runCmd("git", ["rev-parse", "--verify", `refs/heads/pr-${number}`], { cwd })).exitCode === 0;
-	if (fetch.exitCode !== 0 || !hasHead) {
-		// Last-resort: empty diff so the report can still surface metadata.
-		const placeholder = `(no diff captured: PR ${prRef} fetch failed)\n`;
-		const path = writeDiff(runDir, placeholder);
-		return {
-			path,
-			diff: placeholder,
-			mode: "git-pr-fallback",
-			baseSha: prMeta?.baseRefOid,
-			headSha,
-		};
+	let prMeta: { number?: string; baseRefName?: string; baseRefOid?: string; headRefOid?: string } | null = null;
+	if (view.exitCode === 0 && view.stdout.trim()) {
+		try {
+			prMeta = JSON.parse(view.stdout);
+		} catch {
+			prMeta = null;
+		}
+	}
+	const parsed = parsePrRepo(prRef);
+	const number = prMeta?.number ?? parsed?.number ?? prRef.match(/(\d+)/)?.[1] ?? "";
+	if (!number) {
+		throw new Error(`pi-review: could not parse PR number from ${prRef} — refusing to guess a diff base.`);
+	}
+	const baseName = prMeta?.baseRefName ?? "main";
+	const expectedHead = prMeta?.headRefOid;
+
+	// 1) Refresh the base remote-tracking ref (force handles rewind).
+	const baseFetch = await _runCmd(
+		"git",
+		["fetch", "origin", `+refs/heads/${baseName}:refs/remotes/origin/${baseName}`, "--quiet"],
+		{ cwd },
+	);
+	// 2) Fetch the PR head into FETCH_HEAD (no named ref → no stale reuse).
+	const headFetch = await _runCmd("git", ["fetch", "origin", `pull/${number}/head`, "--quiet"], { cwd });
+	if (baseFetch.exitCode !== 0 || headFetch.exitCode !== 0) {
+		throw new Error(
+			`pi-review: git fallback failed to fetch PR ${number} (base: ${baseFetch.stderr.trim().slice(0, 120)}; head: ${headFetch.stderr.trim().slice(0, 120)}). Not falling back to stale local refs — fix gh auth/network and re-run.`,
+		);
+	}
+	const fetchHead = (await _runCmd("git", ["rev-parse", "FETCH_HEAD"], { cwd })).stdout.trim();
+	if (!fetchHead) {
+		throw new Error(`pi-review: FETCH_HEAD empty after fetching PR ${number} — aborting instead of guessing.`);
+	}
+	if (expectedHead && fetchHead !== expectedHead) {
+		if (attempt === 0) {
+			// PR moved between gh view and fetch — one retry with fresh metadata.
+			return acquirePrDiffViaGit(cwd, prRef, runDir, attempt + 1);
+		}
+		throw new Error(
+			`pi-review: fetched PR ${number} head ${fetchHead.slice(0, 12)} != GitHub headRefOid ${expectedHead.slice(0, 12)} after retry — the PR is moving; re-run /review when it settles.`,
+		);
 	}
 
-	const baseRef = `origin/${base}`;
-	const mergeBase = (await _runCmd("git", ["merge-base", baseRef, `pr-${number}`], { cwd })).stdout.trim();
-	const diffRes = await _runCmd("git", ["diff", `${baseRef}...pr-${number}`], { cwd });
+	const baseRef = (await _runCmd("git", ["rev-parse", "--verify", `refs/remotes/origin/${baseName}`], { cwd })).exitCode === 0
+		? `refs/remotes/origin/${baseName}`
+		: `origin/${baseName}`;
+	const mergeBase = (await _runCmd("git", ["merge-base", baseRef, "FETCH_HEAD"], { cwd })).stdout.trim();
+	const diffRes = await _runCmd("git", ["diff", `${baseRef}...FETCH_HEAD`], { cwd });
 	const text = diffRes.stdout.length > 0 ? diffRes.stdout : "(no diff captured)\n";
 	const path = writeDiff(runDir, text);
 	return {
@@ -256,7 +323,7 @@ async function acquirePrDiff(
 		diff: text,
 		mode: "git-pr-fallback",
 		baseSha: prMeta?.baseRefOid ?? mergeBase,
-		headSha,
+		headSha: expectedHead ?? fetchHead,
 		mergeBase,
 	};
 }
@@ -324,12 +391,6 @@ async function safeRev(cwd: string, ref: string): Promise<string | undefined> {
 	const r = await _runCmd("git", ["rev-parse", ref], { cwd });
 	if (r.exitCode !== 0) return undefined;
 	return r.stdout.trim() || undefined;
-}
-
-async function safeHeadFromPull(cwd: string, number: string): Promise<string | undefined> {
-	const r = await _runCmd("git", ["ls-remote", "--heads", "origin", `pull/${number}/head`], { cwd });
-	if (r.exitCode !== 0 || !r.stdout.trim()) return undefined;
-	return r.stdout.trim().split(/\s+/)[0] || undefined;
 }
 
 async function detectDefaultBranch(cwd: string): Promise<string | null> {
@@ -446,6 +507,55 @@ function safeRead(path: string): string {
 	return existsSync(path) ? readFileSync(path, "utf-8") : "";
 }
 
+/**
+ * One-time-per-run回收 of the v0.5/0.6 flat layout (`.pi/pi-review/*.txt`
+ * + `change.diff` at the root). Those leftovers were repeatedly misread as
+ * the current run's inputs by later sessions; only known legacy filenames
+ * directly under `.pi/pi-review/` are touched — `runs/` is never scanned.
+ */
+export function pruneLegacyFlatArtifacts(cwd: string): string[] {
+	const root = join(cwd, ".pi", "pi-review");
+	const legacyNames = ["change.diff", "changed-files.txt", "change-kind.txt", "diff-meta.txt"];
+	const removed: string[] = [];
+	for (const name of legacyNames) {
+		const p = join(root, name);
+		try {
+			if (existsSync(p)) {
+				rmSync(p, { force: true });
+				removed.push(p);
+			}
+		} catch {
+			/* best effort */
+		}
+	}
+	return removed;
+}
+
+/** Prune scratch workspace clones older than WORKSPACE_TTL_MS from the tmpdir. */
+export function pruneStaleWorkspaces(now = Date.now()): string[] {
+	const removed: string[] = [];
+	let entries: string[];
+	try {
+		entries = readdirSync(tmpdir());
+	} catch {
+		return removed;
+	}
+	for (const entry of entries) {
+		if (!entry.startsWith("pi-review-ws-")) continue;
+		const path = join(tmpdir(), entry);
+		try {
+			const stat = statSync(path);
+			if (now - stat.mtimeMs > WORKSPACE_TTL_MS) {
+				rmSync(path, { recursive: true, force: true });
+				removed.push(path);
+			}
+		} catch {
+			/* already gone or unreadable */
+		}
+	}
+	return removed;
+}
+
 /** Resolve a ReviewTarget locally (mirrors src/git-input.ts without the `gh pr diff` call). */
 async function resolveReviewTarget(
 	cwd: string,
@@ -493,5 +603,4 @@ function prLabel(prRef: string): string {
 export { setRunCmd, resetRunCmd, setTargetWorkspaceCmd, resetTargetWorkspaceCmd };
 
 void DEFAULT_CONFIG;
-void mkdirSync;
 void writeFileSync;
