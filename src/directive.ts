@@ -38,6 +38,8 @@ export interface ReviewDirectiveInput {
 	/** Verdict policy passed to the gate task (code-side authoritative). */
 	verdictPolicy?: "strict" | "legacy";
 	lite: boolean;
+	/** Set false to skip the gate while keeping the full reviewer roster. */
+	gateEnabled?: boolean;
 	cwd: string;
 	/** Absolute path to the plugin-prepared target workspace (reviewer cwd). */
 	workspacePath: string;
@@ -52,6 +54,7 @@ export interface ReviewDirectiveInput {
 export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	const { target, reviewers, gateModel, gateThinking, threshold, lite, cwd, workspacePath, manifestPath, diffPath } = input;
 	const policy = input.verdictPolicy ?? "strict";
+	const gateOn = !lite && input.gateEnabled !== false;
 	const budgets = input.budgets ?? resolveLeanBudgets();
 	const gateModelWithThinking = withThinkingSuffix(gateModel, gateThinking);
 	const blocks: string[] = [];
@@ -63,7 +66,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		blocks.push("");
 	}
 	blocks.push(
-		`Review the change (${target.label}). The plugin has already prepared the target workspace, diff and run manifest. Run one workflowScript that fans out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite)" : ""}${lite ? "" : " + inline gate"}, then call the \`pi_review_report\` tool to finalize the report. Do not re-write or summarize findings in chat.`,
+		`Review the change (${target.label}). The plugin has already prepared the target workspace, diff and run manifest. Run one workflowScript that fans out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite)" : ""}${gateOn ? " + inline gate" : ""}, then call the \`pi_review_report\` tool to finalize the report. Do not re-write or summarize findings in chat.`,
 	);
 	blocks.push("");
 	blocks.push("## Hard rules (do not violate)");
@@ -72,7 +75,9 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push(
 		lite
 			? "- Step 2 must be a **single** `subagent({ workflowScript, async:false, ... })` that fans out the lite-reviewer via `runs.all([...])` — never more than one call."
-			: "- Step 2 must be a **single** `subagent({ workflowScript, async:false, ... })` that fans out **all** reviewers via `runs.all([...])` and runs the inline gate via `runs.run(\"gate\", ...)` — never one call per reviewer, never serial waves.",
+			: gateOn
+				? "- Step 2 must be a **single** `subagent({ workflowScript, async:false, ... })` that fans out **all** reviewers via `runs.all([...])` and runs the inline gate via `runs.run(\"gate\", ...)` — never one call per reviewer, never serial waves."
+				: "- Step 2 must be a **single** `subagent({ workflowScript, async:false, ... })` that fans out **all** reviewers via `runs.all([...])` (gate disabled in config) — never one call per reviewer, never serial waves.",
 	);
 	blocks.push(
 		"- **Do not retry** or re-spawn if a reviewer times out, hits its turnBudget, returns partial output, or fails — `runs.all` collects failures as `{ ok:false }`; the script continues and you mark failures in the report.",
@@ -81,6 +86,9 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		"- **Exception (script-level failure):** if the `subagent` call is rejected because the `workflowScript` **fails to parse** (no reviewer ever started — e.g. a syntax error in the script literal), you may correct the quoting/wrapping of the generated script and call `subagent` **once more**. Do not retry any reviewer that already started and failed.",
 	);
 	blocks.push("- **Do not** call `subagent` for verification, re-review, or rewriting the report.");
+	blocks.push(
+		"- **Never read `.pi-subagents/` (artifacts, transcripts, run metadata) or reconstruct findings from disk.** Findings for `pi_review_report` come exclusively from the workflow return value of the Step 2 call — files left there by earlier runs describe OTHER reviews (a real incident had a failed workflow followed by stale-artifact findings presented as the current PR's).",
+	);
 	blocks.push(
 		"- Use the exact `pi-review.*` agents below — do not substitute builtin `reviewer`. Keep per-child `toolBudget` / `turnBudget` and the top-level `async:false` / `context:\"fresh\"` / `timeoutMs`.",
 	);
@@ -101,7 +109,9 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		`Confirm the target workspace is readable: ${workspacePath}`,
 		lite
 			? "Run one workflowScript: the lite-reviewer (one subagent call)"
-			: `Run one workflowScript: ${reviewers.length} parallel reviewers + inline gate (one subagent call)`,
+			: gateOn
+				? `Run one workflowScript: ${reviewers.length} parallel reviewers + inline gate (one subagent call)`
+				: `Run one workflowScript: ${reviewers.length} parallel reviewers, no gate (one subagent call)`,
 		"Call `pi_review_report` once with the workflow return value (never re-parse findings)",
 	];
 	for (const s of todoSteps) blocks.push(`- [ ] ${s}`);
@@ -132,6 +142,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		gateModel,
 		budgets,
 		lite,
+		gateEnabled: gateOn,
 		threshold,
 		verdictPolicy: policy,
 		targetLabel: target.label,
@@ -145,7 +156,9 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push(
 		lite
 			? "The script fans out the single lite-reviewer. Read `result.structuredOutput`; never parse free text."
-			: "The script fans out the lean reviewers in parallel, then feeds their structuredOutput objects to the gate. The gate also returns structuredOutput; the script passes it back unchanged.",
+			: gateOn
+				? "The script fans out the lean reviewers in parallel, then feeds their structuredOutput objects to the gate. The gate also returns structuredOutput; the script passes it back unchanged."
+				: "The script fans out the lean reviewers in parallel (gate disabled in config). Read `result.structuredOutput`; never parse free text.",
 	);
 	blocks.push("");
 	blocks.push("```js");
@@ -197,6 +210,8 @@ export function buildWorkflowScript(input: {
 	gateModel: string;
 	budgets: LeanBudgetSpec;
 	lite: boolean;
+	/** Mirror of the directive-level gate switch (false when lite OR disabled). */
+	gateEnabled?: boolean;
 	threshold: number;
 	/** Verdict policy for the gate task text (strict is code-side default). */
 	verdictPolicy?: "strict" | "legacy";
@@ -215,6 +230,7 @@ export function buildWorkflowScript(input: {
 		gateModel,
 		budgets,
 		lite,
+		gateEnabled = true,
 		threshold,
 		verdictPolicy = "strict",
 		targetLabel,
@@ -223,6 +239,7 @@ export function buildWorkflowScript(input: {
 		manifestPath,
 		diffPath,
 	} = input;
+	const gateOn = !lite && gateEnabled;
 
 	const reviewerSchemaLiteral = serializeSchemaForJs(REVIEWER_OUTPUT_SCHEMA);
 	const gateSchemaLiteral = serializeSchemaForJs(GATE_OUTPUT_SCHEMA);
@@ -248,10 +265,11 @@ export function buildWorkflowScript(input: {
 		const tbForId = r.id === "history-context" ? LEAN_BUDGETS.historyToolBudget : tb;
 		const taskParts = [
 			READ_ONLY_PREFIX,
-			`Read ${JSON.stringify(diffPath)} as the change. Also read ${JSON.stringify(manifestPath)} for change-profile (docsOnly, file list, rule file paths). Do not re-fetch via gh/git.`,
+			`Read ${JSON.stringify(diffPath)} as the change — the diff is the authoritative change record; workspace files are context only. When a workspace file disagrees with the diff, trust the diff and note the discrepancy in coverage.limitations.`,
+			`Also read ${JSON.stringify(manifestPath)} for change-profile (docsOnly, file list, rule file paths). Do not re-fetch via gh/git.`,
 			`Your cwd is the target workspace (${JSON.stringify(workspacePath)}). Run all read/grep/git from there.`,
 			"Stay within budgets; return your findings as structuredOutput matching the REVIEWER_SCHEMA and stop.",
-			"Do not read plan.md, progress.md, .pi-subagents transcripts, or node_modules.",
+			"Do not read plan.md, progress.md, anything under .pi-subagents/ (artifacts and transcripts included), or node_modules.",
 			"Prefer Read/Grep. If you use bash, only simple allowlisted commands (no &&/||/; compounds).",
 		];
 		if (r.id === "claude-md-compliance") {
@@ -304,7 +322,7 @@ export function buildWorkflowScript(input: {
 	lines.push("  reviewers,");
 
 	// ---- gate ----------------------------------------------------------
-	if (!lite) {
+	if (gateOn) {
 		const gateTask = [
 			READ_ONLY_PREFIX,
 			`Synthesize reviewer findings for ${targetLabel}.`,

@@ -69,6 +69,61 @@ describe("runReportTool", () => {
 		assert.equal(res.ok, true);
 	});
 
+	test("findings from non-roster reviewer keys are dropped and surfaced (stale-artifact guard)", () => {
+		const { cwd, runId, manifest } = setupManifest();
+		// Simulate the 2026-08-24 incident shape: a workflowReturn assembled
+		// from OLD artifacts carries reviewer keys this run never launched.
+		writeManifest(join(cwd, ".pi", "pi-review", "runs", runId), {
+			...manifest,
+			reviewerIds: ["bugbot"],
+		});
+		const res = runReportTool({
+			runId,
+			cwd,
+			threshold: 8,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "bugbot",
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [],
+							summary: "",
+							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+						},
+					},
+					{
+						key: "history-context",
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [MAJOR_ISSUE],
+							summary: "from an old run",
+							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+						},
+					},
+				],
+				gate: {
+					ok: true,
+					structuredOutput: {
+						status: "ok",
+						verdict: "request_changes",
+						issues: [{ ...MAJOR_ISSUE, confidence: 9 }],
+						dispositions: [],
+						reason: "old artifacts",
+						coverage: { limitations: [] },
+					},
+				},
+			},
+		});
+		assert.equal(res.ok, true);
+		if (!res.ok) return;
+		// The stale reviewer's major must not survive into the report issues.
+		assert.equal(res.report.totals.bySeverity.major, 0);
+		assert.match(res.markdown, /non-roster reviewer keys: history-context/);
+	});
+
 	test("gate finalConfidence re-score is applied (7 -> 8 survives threshold 8)", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({

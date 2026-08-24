@@ -76,9 +76,9 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			model: "inherit",
 		},
 	},
-	budgets: {
-		turnBudget: { maxTurns: 20, graceTurns: 2 },
-	},
+	// No budgets override by default — lean-agents' LEAN_BUDGETS owns the
+	// defaults (26 turns); a stale hard-coded 20 here would silently regress
+	// them whenever config was wired through.
 };
 
 /**

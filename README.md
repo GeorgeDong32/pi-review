@@ -49,7 +49,7 @@ The surface is intentionally minimal. Removed knobs (`--threshold` / `--reviewer
 |---|---|
 | `--lite` | Single-agent fast mode: one reviewer, no gate. |
 | `--gate-model <id>` | Override the gate model for this run (otherwise `config.gate.model`). |
-| `--no-spawn` | Dry run — print the directive that would be injected, and exit. |
+| `--no-spawn` | Dry run — print the prepared run summary (mode, diff SHA, workspace, roster); side-effect free (no pruning). |
 
 ### Removed flags → config
 
@@ -215,16 +215,15 @@ src/report.ts             buildReportFromWorkflow + renderReport
 src/gate-enforce.ts       Dedupe + threshold + strict/legacy verdict (deterministic)
 src/types.ts              Shared interfaces
 src/config.ts             loadConfig / mergeWithDefaults / validateConfig / writeConfig
-src/schema.ts             TypeBox schemas (legacy spawn path)
-agents/*.md               Bundled reviewer prompts (incl. lite-review.md for --lite)
-prompts/gate.md           Gate subagent prompt
+src/workflow-schemas.ts  outputSchema fragments for reviewer + gate children
+agents/*.md               Bundled reviewer prompts (gate.md is the gate prompt)
 tests/*.test.ts           node:test suites
 ```
 
 ## Limitations (v1)
 
 - No automatic retry: a failed reviewer is recorded as `ok=false` and the rest of the run continues. The gate still runs.
-- The prepared target workspace (for PRs) is ephemeral under `.pi/pi-review/runs/` and pruned by TTL; it is not a full worktree with build state.
+- The prepared target workspace (for PRs) is a shallow clone (depth 50) under the OS tmpdir (`pi-review-ws-*`), pruned by a 24h TTL; run manifests + diffs live under `.pi/pi-review/runs/` (same TTL). It is not a full worktree with build state.
 - GitHub: the extension uses `gh`/`git` to obtain PRs; oversized diffs fall back to git. PR comments are not posted.
 - No web config UI: only `$EDITOR`.
 

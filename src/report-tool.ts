@@ -130,7 +130,18 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 		structuredOutput?: unknown;
 		output?: string;
 	}>;
-	const reviewerOutputs = reviewersRaw.map((r) => ({
+	// Stale-artifact guard: findings may only come from reviewers THIS run
+	// fanned out (manifest.reviewerIds). Anything else — e.g. a main agent
+	// that reconstructed a workflowReturn from old .pi-subagents artifacts
+	// after a failed workflow — is dropped and surfaced, never reported.
+	const roster = new Set(manifest?.reviewerIds ?? []);
+	const knownReviewers = roster.size === 0
+		? reviewersRaw
+		: reviewersRaw.filter((r) => roster.has(r.key));
+	const unknownKeys = reviewersRaw
+		.filter((r) => roster.size > 0 && !roster.has(r.key))
+		.map((r) => r.key);
+	const reviewerOutputs = knownReviewers.map((r) => ({
 		key: r.key,
 		ok: r.ok,
 		error: r.error,
@@ -247,6 +258,7 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 			workspacePath: manifest.workspacePath,
 			workspaceHeadSha: manifest.workspaceHeadSha,
 			workspaceWarning: manifest.workspaceWarning,
+			diffWarning: manifest.diffWarning,
 			mode: manifest.mode,
 			docsOnly: manifest.docsOnly,
 			rulePaths: manifest.rulePaths,
@@ -262,7 +274,9 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 		enforcedVerdict: enforced.verdict,
 		enforcedIssues: enforced.issues,
 		enforcedDispositions: dispositions,
-		enforcedReason: enforced.reason,
+		enforcedReason: unknownKeys.length > 0
+			? `${enforced.reason} (dropped findings from non-roster reviewer keys: ${unknownKeys.join(", ")})`
+			: enforced.reason,
 	});
 
 	const markdown = renderReport(built);

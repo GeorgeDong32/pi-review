@@ -81,6 +81,70 @@ describe("buildReportFromWorkflow", () => {
 		assert.equal(report.verdict, "request_changes");
 	});
 
+	test("all reviewers limited → partial, never a clean approve (coverage hole)", () => {
+		const limited = [
+			{
+				key: "bugbot",
+				ok: true,
+				structuredOutput: {
+					status: "limited",
+					issues: [],
+					summary: "partial",
+					coverage: { filesChecked: [], commandsRun: [], limitations: ["turn budget"] },
+				},
+			},
+		];
+		const report = buildReportFromWorkflow({
+			startedAt: 0,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: limited, gate: { ok: true, structuredOutput: { status: "ok" } } },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "no survivors",
+		});
+		assert.equal(report.verdict, "partial");
+	});
+
+	test("one limited + one ok reviewer does not downgrade to partial", () => {
+		const mixed = [
+			{
+				key: "bugbot",
+				ok: true,
+				structuredOutput: {
+					status: "limited",
+					issues: [],
+					summary: "",
+					coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+				},
+			},
+			{
+				key: "security-review",
+				ok: true,
+				structuredOutput: {
+					status: "ok",
+					issues: [],
+					summary: "",
+					coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+				},
+			},
+		];
+		const report = buildReportFromWorkflow({
+			startedAt: 0,
+			manifest: MANIFEST,
+			workflowReturn: { reviewers: mixed, gate: { ok: true, structuredOutput: { status: "ok" } } },
+			threshold: 8,
+			policy: "strict",
+			enforcedVerdict: "approve",
+			enforcedIssues: [],
+			enforcedDispositions: [],
+			enforcedReason: "ok",
+		});
+		assert.equal(report.verdict, "approve");
+	});
+
 	test("totals use enforced issues", () => {
 		const report = buildReportFromWorkflow({
 			startedAt: 0,

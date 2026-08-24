@@ -62,6 +62,10 @@ export interface RunManifest {
 	createdAt: number;
 	/** Lanes adaptive routing dropped up front (id + reason), for report coverage. */
 	skippedReviewers?: Array<{ id: string; reason: string }>;
+	/** Reviewer ids fanned out by THIS run — the report tool rejects findings from anything else. */
+	reviewerIds?: string[];
+	/** Non-fatal note about the acquired diff (e.g. stale-base fallback). */
+	diffWarning?: string;
 }
 
 export interface PrepInput {

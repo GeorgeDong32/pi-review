@@ -301,6 +301,98 @@ describe("prepareRun — lite + adaptive routing", () => {
 	});
 });
 
+describe("prepareRun — config wiring (round-2 adversarial findings)", () => {
+	const PR = "https://github.com/o/r/pull/51";
+	const DIFF = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+
+	function prCmds(diff = DIFF) {
+		return fakeCmd({
+			gh: (args) => {
+				if (args[0] === "pr" && args[1] === "view") {
+					return {
+						stdout: JSON.stringify({ number: "51", baseRefName: "main", headRefOid: "h1" }),
+						stderr: "",
+						exitCode: 0,
+					};
+				}
+				if (args[0] === "pr" && args[1] === "diff") {
+					return { stdout: diff, stderr: "", exitCode: 0 };
+				}
+				return { stdout: "", stderr: "no", exitCode: 1 };
+			},
+		});
+	}
+
+	test("gate.enabled=false skips the gate but keeps the full roster", async () => {
+		const cwd = setup();
+		writeConfig({ ...DEFAULT_CONFIG, gate: { ...DEFAULT_CONFIG.gate, enabled: false } });
+		setReviewRunCmd(prCmds());
+		setTargetWorkspaceCmd(async (cmd, args) => {
+			if (cmd === "git" && args[0] === "rev-parse" && args.includes("HEAD")) {
+				return { stdout: "h1\n", stderr: "", exitCode: 0 };
+			}
+			return { stdout: "", stderr: "", exitCode: 0 };
+		});
+		const prepared = await prepareRun({ cwd, input: PR });
+		assert.ok(prepared);
+		assert.doesNotMatch(prepared!.directiveText, /runs\.run\('gate'/);
+		// Full roster still fans out (not the lite single-lane shape).
+		assert.ok((prepared!.manifest.reviewerIds?.length ?? 0) >= 4, "full roster expected");
+		assert.match(prepared!.directiveText, /gate disabled in config/);
+		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
+	});
+
+	test("config budgets.turnBudget flows into the script (not just the default)", async () => {
+		const cwd = setup();
+		writeConfig({
+			...DEFAULT_CONFIG,
+			budgets: { turnBudget: { maxTurns: 33, graceTurns: 2 } },
+		} as typeof DEFAULT_CONFIG);
+		setReviewRunCmd(prCmds());
+		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+		const prepared = await prepareRun({ cwd, input: PR });
+		assert.ok(prepared);
+		assert.match(prepared!.directiveText, /maxTurns: 33/);
+		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
+	});
+
+	test("manifest records the run's reviewer roster", async () => {
+		const cwd = setup();
+		setReviewRunCmd(prCmds());
+		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+		const prepared = await prepareRun({ cwd, input: PR });
+		assert.ok(prepared);
+		assert.ok(Array.isArray(prepared!.manifest.reviewerIds));
+		assert.ok(prepared!.manifest.reviewerIds!.length >= 4);
+		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
+	});
+
+	test("mixed dirty tree: modified + untracked files all land in the diff", async () => {
+		const cwd = setup();
+		writeFileSync(join(cwd, "tracked.ts"), "a\n");
+		writeFileSync(join(cwd, "brand-new.ts"), "console.log(1);\n");
+		setReviewRunCmd(
+			fakeCmd({
+				"git status": () => ({ stdout: " M tracked.ts\n?? brand-new.ts\n", stderr: "", exitCode: 0 }),
+				"git diff": () => ({
+					stdout: "diff --git a/tracked.ts b/tracked.ts\n--- a/tracked.ts\n+++ b/tracked.ts\n@@ -1 +1 @@\n-a\n+b\n",
+					stderr: "",
+					exitCode: 0,
+				}),
+				"git ls-files": () => ({ stdout: "brand-new.ts\n", stderr: "", exitCode: 0 }),
+				"git rev-parse": () => ({ stdout: "abc\n", stderr: "", exitCode: 0 }),
+			}),
+		);
+		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
+		const prepared = await prepareRun({ cwd, input: "" });
+		assert.ok(prepared);
+		const m = prepared!.manifest;
+		assert.ok(m.changedFiles.includes("tracked.ts"), "tracked change present");
+		assert.ok(m.changedFiles.includes("brand-new.ts"), "untracked new file must be reviewed too");
+		assert.match(readFileSync(m.diffPath, "utf-8"), /brand-new\.ts/);
+	});
+});
+
 describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
 	const PR = "https://github.com/o/r/pull/33";
 

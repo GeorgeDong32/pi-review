@@ -78,6 +78,33 @@ pi-subagents 0.55.0 source.
 - Reviewer default turn budget 20→26 (field runs kept wrapping up partial
   at the soft limit).
 
+### Fixed — adversarial round 2 (wiring, coverage semantics, contamination guards)
+- **`gate.enabled` and `budgets.turnBudget` actually take effect:** both
+  config keys were documented but never consumed by the execution path.
+  `gate.enabled: false` now skips the gate while keeping the full reviewer
+  roster; config turn budgets flow into the workflowScript (and the stale
+  hard-coded default that would have regressed 26→20 was removed).
+- **Mixed dirty trees review untracked files too:** a working tree with both
+  modified and new files previously diffed only the tracked changes — new
+  files (the ones most needing review) silently missed. Both parts are now
+  combined into the run diff.
+- **Stale-artifact contamination guard:** the directive's hard rules forbid
+  reading `.pi-subagents/` (the 2026-08-24 incident had a failed workflow
+  followed by old-artifact findings presented as the current PR's), and
+  `pi_review_report` drops + surfaces findings whose reviewer key is not in
+  the run's roster (manifest.reviewerIds).
+- **All-limited coverage never yields a clean APPROVE:** when every reviewer
+  returned `status: limited`, the report verdict is now `partial` instead of
+  `approve` (the mirror of the no-gate incident: degraded coverage must not
+  read as a pass).
+- **Local stale-base warning:** a failed `git fetch origin <base>` with an
+  existing remote-tracking ref now records a visible diff note instead of
+  silently diffing against a stale base.
+- **Diff-vs-workspace arbitration made explicit:** reviewer tasks state the
+  diff is the authoritative change record; workspace files are context only.
+- Trivial-change guard cleans up its orphan run dir; dry-run is fully
+  side-effect free; README/config-comment drift fixed.
+
 ### Migration
 - None. Config schema unchanged; behavior differences are all in-plugin.
 

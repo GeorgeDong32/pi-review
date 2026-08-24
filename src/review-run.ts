@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 
 import { DEFAULT_CONFIG, loadConfig, resolveModel } from "./config.js";
 import { buildReviewDirective } from "./directive.js";
+import { resolveLeanBudgets } from "./lean-agents.js";
 import { extractPrRef } from "./pr-ref.js";
 import {
 	RunManifest,
@@ -120,14 +121,21 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		workspacePath: workspaceResult.workspacePath,
 		workspaceHeadSha: workspaceResult.workspaceHeadSha,
 		workspaceWarning: workspaceResult.warning,
+		diffWarning: diffResult.warning,
 		runDir,
 		createdAt: Date.now(),
 	};
 
 	const gateModel = resolveModel(input.gateModel ?? config.gate.model, undefined);
 	// Trivial change guard: an empty/placeholder diff (no +/- hunks) is not
-	// worth fanning out reviewers.
+	// worth fanning out reviewers. Drop the orphan run dir (only change.diff
+	// was written so far) instead of leaving it for the 24h pruner.
 	if (changedFiles.additions + changedFiles.deletions === 0) {
+		try {
+			rmSync(runDir, { recursive: true, force: true });
+		} catch {
+			/* best effort */
+		}
 		return null;
 	}
 	const profile: ChangeProfile = {
@@ -139,6 +147,9 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		? [{ id: "lite-review", label: "Lite Review", enabled: true, model: "inherit" }]
 		: reviewersForRouting(target, config, profile);
 	const skippedReasons = adaptiveSkips(profile);
+	// The report tool uses this to reject findings that did not come from this
+	// run's roster (stale-artifact contamination guard).
+	manifest.reviewerIds = reviewers.map((r) => r.id);
 	const workspacePath = manifest.workspacePath;
 	const manifestPath = join(runDir, "manifest.json");
 	const diffPath = manifest.diffPath;
@@ -151,6 +162,7 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		reviewers,
 		gateModel,
 		gateThinking: input.lite ? undefined : config.gate.thinking,
+		gateEnabled: config.gate.enabled,
 		threshold: config.gate.threshold,
 		verdictPolicy: config.gate.verdictPolicy,
 		lite: Boolean(input.lite),
@@ -158,6 +170,7 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		workspacePath,
 		manifestPath,
 		diffPath,
+		budgets: resolveLeanBudgets(config.budgets),
 	});
 	// Remember which lanes adaptive routing dropped so the report can surface
 	// them as coverage rather than letting users wonder where a reviewer went.
@@ -192,6 +205,7 @@ interface DiffAcquisitionResult {
 	baseSha?: string;
 	headSha?: string;
 	mergeBase?: string;
+	warning?: string;
 }
 
 async function acquireDiff(
@@ -303,7 +317,7 @@ async function acquirePrDiffViaGit(
 	const headFetch = await _runCmd("git", ["fetch", "origin", `pull/${number}/head`, "--quiet"], { cwd });
 	if (baseFetch.exitCode !== 0 || headFetch.exitCode !== 0) {
 		throw new Error(
-			`pi-review: git fallback failed to fetch PR ${number} (base: ${baseFetch.stderr.trim().slice(0, 120)}; head: ${headFetch.stderr.trim().slice(0, 120)}). Not falling back to stale local refs — fix gh auth/network and re-run.`,
+			`pi-review: git fallback failed to fetch PR ${number} (base: ${baseFetch.stderr.trim().slice(0, 120)}; head: ${headFetch.stderr.trim().slice(0, 120)}). Not falling back to stale local refs — check gh/git install + auth, network, and the origin remote, then re-run.`,
 		);
 	}
 	const fetchHead = (await _runCmd("git", ["rev-parse", "FETCH_HEAD"], { cwd })).stdout.trim();
@@ -340,36 +354,28 @@ async function acquirePrDiffViaGit(
 async function acquireLocalDiff(cwd: string, runDir: string): Promise<DiffAcquisitionResult> {
 	const status = await _runCmd("git", ["status", "--porcelain"], { cwd });
 	if (status.stdout.trim().length > 0) {
-		const diff = await _runCmd("git", ["diff", "HEAD"], { cwd });
-		const text = diff.stdout.length > 0 ? diff.stdout : "";
+		// Mixed trees (modified + untracked files) must review BOTH parts —
+		// new files are exactly what needs eyes. Combine the tracked diff
+		// with synthesized new-file diffs instead of returning early on the
+		// first non-empty piece.
+		const tracked = (await _runCmd("git", ["diff", "HEAD"], { cwd })).stdout;
+		const untracked = (await _runCmd("git", ["ls-files", "--others", "--exclude-standard"], { cwd })).stdout;
+		const untrackedParts: string[] = [];
+		for (const f of untracked.trim() ? untracked.trim().split("\n") : []) {
+			try {
+				const content = readFileSync(join(cwd, f), "utf-8");
+				const lines = content.split("\n");
+				untrackedParts.push(
+					`diff --git a/${f} b/${f}\nnew file mode 100644\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`,
+				);
+			} catch {
+				/* unreadable (binary / deleted race) — skip */
+			}
+		}
+		const text = [tracked.trim(), ...untrackedParts].filter(Boolean).join("\n");
 		if (text) {
 			const path = writeDiff(runDir, text);
 			return { path, diff: text, mode: "local-uncommitted", headSha: await safeRev(cwd, "HEAD") };
-		}
-		const diff2 = await _runCmd("git", ["diff"], { cwd });
-		const text2 = diff2.stdout;
-		if (text2.length > 0) {
-			const path = writeDiff(runDir, text2);
-			return { path, diff: text2, mode: "local-uncommitted", headSha: await safeRev(cwd, "HEAD") };
-		}
-		const untracked = (await _runCmd("git", ["ls-files", "--others", "--exclude-standard"], { cwd })).stdout;
-		if (untracked.trim().length > 0) {
-			const files = untracked.trim().split("\n");
-			const parts: string[] = [];
-			for (const f of files) {
-				try {
-					const content = readFileSync(join(cwd, f), "utf-8");
-					const lines = content.split("\n");
-					parts.push(
-						`diff --git a/${f} b/${f}\nnew file mode 100644\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`,
-					);
-				} catch {
-					/* ignore */
-				}
-			}
-			const text = parts.join("\n");
-			const path = writeDiff(runDir, text);
-			return { path, diff: text, mode: "local-uncommitted" };
 		}
 	}
 
@@ -379,7 +385,18 @@ async function acquireLocalDiff(cwd: string, runDir: string): Promise<DiffAcquis
 		const path = writeDiff(runDir, placeholder);
 		return { path, diff: placeholder, mode: "local-vs-default" };
 	}
-	await _runCmd("git", ["fetch", "origin", base, "--quiet"], { cwd });
+	const baseFetch = await _runCmd("git", ["fetch", "origin", base, "--quiet"], { cwd });
+	// A failed fetch with an existing remote-tracking ref silently diffs
+	// against a stale base — surface it instead (the local twin of the PR
+	// stale-ref incident; kept non-fatal because offline local review is a
+	// legitimate mode and the manifest records whichever base was used).
+	let diffWarning: string | undefined;
+	if (baseFetch.exitCode !== 0) {
+		const hasRemoteRef = (await _runCmd("git", ["rev-parse", "--verify", `refs/remotes/origin/${base}`], { cwd })).exitCode === 0;
+		if (hasRemoteRef) {
+			diffWarning = `git fetch origin ${base} failed — diffing against possibly-stale origin/${base}`;
+		}
+	}
 	const compare = (await _runCmd("git", ["rev-parse", "--verify", `origin/${base}`], { cwd })).exitCode === 0
 		? `origin/${base}`
 		: base;
@@ -393,6 +410,7 @@ async function acquireLocalDiff(cwd: string, runDir: string): Promise<DiffAcquis
 		baseSha: await safeRev(cwd, compare),
 		headSha: await safeRev(cwd, "HEAD"),
 		mergeBase: (await _runCmd("git", ["merge-base", compare, "HEAD"], { cwd })).stdout.trim() || undefined,
+		warning: diffWarning,
 	};
 }
 

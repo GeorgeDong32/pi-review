@@ -158,11 +158,16 @@ export function reportVerdict(
 	gate: { ok: boolean; structuredOutput?: unknown; error?: string } | null | undefined,
 	enforcedVerdict?: Verdict,
 ): Verdict | "no-gate" | "error" | "partial" {
-	const ok = reviewers.some((r) => r.ok);
 	if (reviewers.length > 0 && reviewers.every((r) => !r.ok)) return "error";
 	if (!gate || !gate.ok) return "no-gate";
 	const so = gate.structuredOutput as { status?: string } | null;
 	if (so?.status && so.status !== "ok") return "partial";
+	// Every reviewer ran but reported limited coverage — an APPROVE would be
+	// a confidence statement the run cannot back (mirror of the no-gate
+	// incident: degraded coverage must never read as a clean pass).
+	if (reviewers.length > 0 && reviewers.every((r) => r.ok && coerceReviewerOutput(r).status === "limited")) {
+		return "partial";
+	}
 	return enforcedVerdict ?? "comment";
 }
 
@@ -179,6 +184,7 @@ export interface ReportInput {
 		workspacePath: string;
 		workspaceHeadSha?: string;
 		workspaceWarning?: string;
+		diffWarning?: string;
 		mode?: string;
 		docsOnly: boolean;
 		rulePaths: string[];
@@ -280,6 +286,9 @@ export function renderReport(report: BuiltReport): string {
 	}
 	if (report.manifest.workspaceWarning) {
 		lines.push(`- Workspace note: ${report.manifest.workspaceWarning}`);
+	}
+	if (report.manifest.diffWarning) {
+		lines.push(`- Diff note: ${report.manifest.diffWarning}`);
 	}
 	lines.push(`- Diff SHA-256: ${report.manifest.diffSha256.slice(0, 16)}…`);
 	lines.push(`- Workspace: ${report.manifest.workspacePath}`);

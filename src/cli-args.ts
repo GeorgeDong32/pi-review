@@ -8,11 +8,11 @@
  *     PR url / context), injected into reviewers and gate via target.userContext
  *     (see src/prep.ts and src/git-input.ts)
  *
- * Removed flags (--threshold / --reviewer / --gate-model / --score-per-issue /
- * --diff) are accepted-but-ignored for graceful degradation of old
- * invocations: a valued legacy flag also consumes its next token so its value
- * does not leak into `input`. Those capabilities now live in config.json
- * (`/review-config`).
+ * Removed flags (--threshold / --reviewer / --score-per-issue / --diff) are
+ * accepted-but-ignored for graceful degradation of old invocations: a valued
+ * legacy flag also consumes its next token so its value does not leak into
+ * `input`. Those capabilities now live in config.json (`/review-config`).
+ * `--gate-model <id>` remains an active per-run override.
  */
 
 export interface ParsedReviewArgs {
