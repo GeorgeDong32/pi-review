@@ -116,6 +116,106 @@ describe("runReportTool", () => {
 		assert.ok(res.markdown.includes("Verdict: REQUEST_CHANGES"));
 	});
 
+	test("unverified blocker/major dispositions are exempt from the threshold floor", () => {
+		// Field regression (2026-08-20/21): the gate could not verify real
+		// majors and its "keep at original confidence" instruction still lost
+		// them to the code-side threshold filter. The exemption floors the
+		// confidence at the threshold and flags the evidence.
+		const { cwd, runId } = setupManifest();
+		const res = runReportTool({
+			runId,
+			cwd,
+			threshold: 8,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "history-context",
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [MAJOR_ISSUE],
+							summary: "1 major",
+							coverage: { filesChecked: [], commandsRun: [], limitations: ["diff truncated"] },
+						},
+					},
+				],
+				gate: {
+					ok: true,
+					structuredOutput: {
+						status: "ok",
+						verdict: "comment",
+						issues: [],
+						dispositions: [
+							{
+								fingerprint: "a.ts:4:bug:null",
+								decision: "kept",
+								originalConfidence: 7,
+								finalConfidence: 7,
+								sourceReviewers: ["history-context"],
+								reason: "unverified: diff truncated before the registration hunk; kept for human review",
+							},
+						],
+						reason: "kept unverified",
+						coverage: { limitations: [] },
+					},
+				},
+			},
+		});
+		assert.equal(res.ok, true);
+		if (!res.ok) return;
+		assert.equal(res.verdict, "request_changes", "unverified major must drive the verdict");
+		assert.match(res.markdown, /\(unverified\)/);
+	});
+
+	test("unverified exemption does not apply to minor/nit severities", () => {
+		const { cwd, runId } = setupManifest();
+		const minor = { ...MAJOR_ISSUE, severity: "minor" as const, fingerprint: "a.ts:4:bug:minor" };
+		const res = runReportTool({
+			runId,
+			cwd,
+			threshold: 8,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "code-comments",
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [{ ...minor, confidence: 4 }],
+							summary: "1 minor",
+							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+						},
+					},
+				],
+				gate: {
+					ok: true,
+					structuredOutput: {
+						status: "ok",
+						verdict: "comment",
+						issues: [],
+						dispositions: [
+							{
+								fingerprint: "a.ts:4:bug:minor",
+								decision: "dropped",
+								originalConfidence: 4,
+								finalConfidence: 4,
+								sourceReviewers: ["code-comments"],
+								reason: "unverified: stylistic, below bar",
+							},
+						],
+						reason: "dropped",
+						coverage: { limitations: [] },
+					},
+				},
+			},
+		});
+		assert.equal(res.ok, true);
+		if (!res.ok) return;
+		// Gate ok + no surviving issues → enforced approve… but gate status ok
+		// means the report verdict comes from enforcement: approve.
+		assert.equal(res.verdict, "approve");
+	});
+
 	test("without gate scores, a conf-7 major is dropped at threshold 8 and the report says no-gate (not approve)", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({

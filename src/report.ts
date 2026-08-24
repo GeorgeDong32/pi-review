@@ -269,10 +269,14 @@ export function renderReport(report: BuiltReport): string {
 		lines.push(`- Base: ${report.manifest.baseSha.slice(0, 12)} · Head: ${report.manifest.headSha.slice(0, 12)}`);
 	}
 	if (report.manifest.workspaceHeadSha) {
-		const matched = !report.manifest.headSha || report.manifest.workspaceHeadSha === report.manifest.headSha;
-		lines.push(
-			`- Workspace HEAD: ${report.manifest.workspaceHeadSha.slice(0, 12)}${matched ? " (matches diff head)" : " (MISMATCH vs diff head)"}`,
-		);
+		if (report.manifest.headSha) {
+			const matched = report.manifest.workspaceHeadSha === report.manifest.headSha;
+			lines.push(
+				`- Workspace HEAD: ${report.manifest.workspaceHeadSha.slice(0, 12)}${matched ? " (matches diff head)" : " (MISMATCH vs diff head)"}`,
+			);
+		} else {
+			lines.push(`- Workspace HEAD: ${report.manifest.workspaceHeadSha.slice(0, 12)} (diff head SHA unknown)`);
+		}
 	}
 	if (report.manifest.workspaceWarning) {
 		lines.push(`- Workspace note: ${report.manifest.workspaceWarning}`);

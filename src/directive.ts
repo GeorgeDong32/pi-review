@@ -313,7 +313,7 @@ export function buildWorkflowScript(input: {
 			`Inputs are reviewer structuredOutput objects (each has status, issues[].fingerprint, coverage).`,
 			`Re-score every candidate 1–10. For each blocker/major candidate, first try to verify it by reading the diff hunk and the touched file in the workspace; state what you checked in the disposition reason.`,
 			`Never raise a candidate above 8 without your own verification evidence from the diff or workspace files.`,
-			`If you cannot verify a blocker/major candidate (missing context, truncated diff), do NOT silently drop it: keep it at the reviewer's original confidence, prefix the reason with "unverified:", and let the human decide.`,
+			`If you cannot verify a blocker/major candidate (missing context, truncated diff), do NOT silently drop it: keep it at the reviewer's original confidence, prefix the reason with "unverified:", and let the human decide — the parent's report tool floors unverified blocker/major candidates at the threshold so they stay visible.`,
 			`Every candidate must appear in dispositions with decision (kept | dropped | merged), originalConfidence, finalConfidence, sourceReviewers, reason.`,
 			verdictPolicy === "legacy"
 				? `Verdict (legacy): request_changes if any blocker OR >=3 majors; approve if no blocker/major; else comment.`

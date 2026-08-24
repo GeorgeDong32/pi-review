@@ -58,7 +58,7 @@ The parent re-applies threshold + verdict rules in code; this is a recommendatio
   "reason": "One sentence, ≤500 chars."
 }
 ```
-Return this JSON as your final reply. If the `structured_output` tool is available, call it once instead. Then stop. Do not write any file.
+Return this JSON via the `structured_output` tool when available (otherwise as your final reply, followed by the acceptance-report fence below). Then stop. Do not write any file.
 
 ## Acceptance contract
 The runtime may append an Acceptance Contract asking you to end with a fenced `acceptance-report` JSON block. Comply: after the verdict JSON, end your final message with that fence, summarizing your checks in `reviewFindings` and any coverage gaps in `residualRisks`.

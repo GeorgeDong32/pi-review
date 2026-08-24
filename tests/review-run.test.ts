@@ -5,7 +5,7 @@
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 
 import {
@@ -121,6 +121,9 @@ describe("prepareRun — PR cross-repo workspace", () => {
 		assert.match(prepared!.directiveText, new RegExp(m.workspacePath));
 		assert.match(prepared!.directiveText, /pi_review_report/);
 		assert.match(prepared!.directiveText, /chatProgress: "auto"/);
+		// prepareWorkspace ran for real (only its subprocesses were faked) —
+		// drop the scratch clone it allocated.
+		rmSync(dirname(m.workspacePath), { recursive: true, force: true });
 	});
 
 	test("local-git dirty tree uses cwd as workspace and diff HEAD", async () => {
@@ -258,6 +261,7 @@ describe("prepareRun — lite + adaptive routing", () => {
 		assert.match(prepared!.directiveText, /lite-review/);
 		assert.doesNotMatch(prepared!.directiveText, /runs\.run\('gate'/);
 		assert.match(prepared!.directiveText, /chatProgress: "auto"/);
+		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
 	});
 
 	test("adaptive routing skips lanes that cannot add signal", async () => {
@@ -300,42 +304,59 @@ describe("prepareRun — lite + adaptive routing", () => {
 describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
 	const PR = "https://github.com/o/r/pull/33";
 
-	function ghFailing() {
-		return {
-			gh: () => ({ stdout: "", stderr: "gh unavailable", exitCode: 1 }),
+	/**
+	 * Stateful fetch tracker: FETCH_HEAD reflects the MOST RECENT fetch, so a
+	 * regression that reorders the base fetch after the head fetch (the
+	 * 2026-08-12 bug class) flips FETCH_HEAD to the base and fails the
+	 * headRefOid verification below.
+	 */
+	function fetchTrackingCmds(prHead = "H1") {
+		let lastFetch: "base" | "head" | null = null;
+		const reviewRunPlan: Record<string, (args: string[]) => { stdout: string; stderr: string; exitCode: number }> = {
+			gh: (args) => {
+				if (args[0] === "pr" && args[1] === "view") {
+					return {
+						stdout: JSON.stringify({ number: "33", baseRefName: "main", baseRefOid: "b0", headRefOid: prHead }),
+						stderr: "",
+						exitCode: 0,
+					};
+				}
+				return { stdout: "", stderr: "no diff", exitCode: 1 };
+			},
+			"git fetch": (args) => {
+				const refspec = args.find((a) => a.includes("refs/heads/") || a.includes("pull/")) ?? "";
+				lastFetch = refspec.includes("pull/") ? "head" : "base";
+				return { stdout: "", stderr: "", exitCode: 0 };
+			},
+			"git rev-parse": (args) => {
+				if (args.includes("FETCH_HEAD")) {
+					// FETCH_HEAD must come from the PR-head fetch, not the base refresh.
+					return lastFetch === "head"
+						? { stdout: `${prHead}\n`, stderr: "", exitCode: 0 }
+						: { stdout: "\n", stderr: "FETCH_HEAD is the base ref", exitCode: 1 };
+				}
+				return { stdout: "mb0\n", stderr: "", exitCode: 0 };
+			},
+			"git merge-base": () => ({ stdout: "mb0\n", stderr: "", exitCode: 0 }),
+			"git diff": () => ({
+				stdout: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n",
+				stderr: "",
+				exitCode: 0,
+			}),
 		};
+		return { reviewRunPlan, orderLog: () => lastFetch };
 	}
 
 	test("fallback verifies FETCH_HEAD against headRefOid and uses it for the diff", async () => {
 		const cwd = setup();
+		const { reviewRunPlan } = fetchTrackingCmds("H1");
 		let viewCalls = 0;
-		setReviewRunCmd(
-			fakeCmd({
-				gh: (args) => {
-					if (args[0] === "pr" && args[1] === "view") {
-						viewCalls++;
-						return {
-							stdout: JSON.stringify({ number: "33", baseRefName: "main", baseRefOid: "b0", headRefOid: "H1" }),
-							stderr: "",
-							exitCode: 0,
-						};
-					}
-					return { stdout: "", stderr: "no diff", exitCode: 1 };
-				},
-				"git fetch": () => ({ stdout: "", stderr: "", exitCode: 0 }),
-				"git rev-parse": (args) => {
-					// FETCH_HEAD matches the PR head; refs/remotes/origin/main resolves.
-					if (args.includes("FETCH_HEAD")) return { stdout: "H1\n", stderr: "", exitCode: 0 };
-					return { stdout: "mb0\n", stderr: "", exitCode: 0 };
-				},
-				"git merge-base": () => ({ stdout: "mb0\n", stderr: "", exitCode: 0 }),
-				"git diff": () => ({
-					stdout: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n",
-					stderr: "",
-					exitCode: 0,
-				}),
-			}),
-		);
+		const plan = { ...reviewRunPlan };
+		plan.gh = (args: string[]) => {
+			if (args[0] === "pr" && args[1] === "view") viewCalls++;
+			return reviewRunPlan.gh!(args);
+		};
+		setReviewRunCmd(fakeCmd(plan));
 		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
 
 		const prepared = await prepareRun({ cwd, input: PR });
@@ -346,6 +367,7 @@ describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
 		// 2 views: one from acquirePrDiff, one fresh from the git fallback —
 		// a mismatch retry would make it 3.
 		assert.equal(viewCalls, 2, "fresh metadata, no mismatch retry");
+		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
 	});
 
 	test("FETCH_HEAD mismatch after one retry fails loudly (no wrong-diff review)", async () => {
@@ -384,7 +406,7 @@ describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
 		const cwd = setup();
 		setReviewRunCmd(
 			fakeCmd({
-				...ghFailing(),
+				gh: () => ({ stdout: "", stderr: "gh unavailable", exitCode: 1 }),
 				"git fetch": () => ({ stdout: "", stderr: "network down", exitCode: 128 }),
 			}),
 		);
@@ -393,6 +415,76 @@ describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
 		await assert.rejects(
 			() => prepareRun({ cwd, input: PR }),
 			/Not falling back to stale local refs/,
+		);
+	});
+
+	test("outer TOCTOU: workspace HEAD mismatch retries, converging run succeeds", async () => {
+		const cwd = setup();
+		const diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+		setReviewRunCmd(
+			fakeCmd({
+				gh: (args) => {
+					if (args[0] === "pr" && args[1] === "view") {
+						return {
+							stdout: JSON.stringify({ number: "34", baseRefName: "main", headRefOid: "GOOD" }),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					if (args[0] === "pr" && args[1] === "diff") {
+						return { stdout: diff, stderr: "", exitCode: 0 };
+					}
+					return { stdout: "", stderr: "no", exitCode: 1 };
+				},
+			}),
+		);
+		let calls = 0;
+		setTargetWorkspaceCmd(async (cmd, args) => {
+			if (cmd === "git" && args[0] === "rev-parse" && args.includes("HEAD")) {
+				calls++;
+				// First clone lands on the stale head; the retry converges.
+				return { stdout: `${calls === 1 ? "STALE" : "GOOD"}\n`, stderr: "", exitCode: 0 };
+			}
+			return { stdout: "", stderr: "", exitCode: 0 };
+		});
+
+		const prepared = await prepareRun({ cwd, input: "https://github.com/o/r/pull/34" });
+		assert.ok(prepared);
+		assert.equal(prepared!.manifest.workspaceHeadSha, "GOOD");
+		assert.equal(calls, 2, "one retry after the mismatch");
+		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
+	});
+
+	test("outer TOCTOU: persistent mismatch throws instead of reviewing split evidence", async () => {
+		const cwd = setup();
+		const diff = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+		setReviewRunCmd(
+			fakeCmd({
+				gh: (args) => {
+					if (args[0] === "pr" && args[1] === "view") {
+						return {
+							stdout: JSON.stringify({ number: "35", baseRefName: "main", headRefOid: "GOOD" }),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					if (args[0] === "pr" && args[1] === "diff") {
+						return { stdout: diff, stderr: "", exitCode: 0 };
+					}
+					return { stdout: "", stderr: "no", exitCode: 1 };
+				},
+			}),
+		);
+		setTargetWorkspaceCmd(async (cmd, args) => {
+			if (cmd === "git" && args[0] === "rev-parse" && args.includes("HEAD")) {
+				return { stdout: "STALE\n", stderr: "", exitCode: 0 };
+			}
+			return { stdout: "", stderr: "", exitCode: 0 };
+		});
+
+		await assert.rejects(
+			() => prepareRun({ cwd, input: "https://github.com/o/r/pull/35" }),
+			/workspace HEAD STALE does not match diff head GOOD/,
 		);
 	});
 });
@@ -421,6 +513,8 @@ describe("cleanup mechanisms", () => {
 		assert.ok(removed.includes(old), "expired workspace pruned");
 		assert.ok(!removed.includes(fresh), "fresh workspace kept");
 		assert.ok(!removed.includes(other), "non-workspace tmp dirs untouched");
+		rmSync(fresh, { recursive: true, force: true });
+		rmSync(other, { recursive: true, force: true });
 	});
 });
 

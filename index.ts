@@ -201,11 +201,13 @@ async function renderDryRun(
 	config: ReturnType<typeof loadConfig>["config"],
 ): Promise<string> {
 	const prepared = await prepareRun({
-			cwd: ctx.cwd,
-			input: parsed.input,
-			lite: parsed.lite,
-			gateModel: parsed.gateModel,
-		});
+		cwd: ctx.cwd,
+		input: parsed.input,
+		lite: parsed.lite,
+		gateModel: parsed.gateModel,
+		// Dry runs must stay side-effect free (no pruning).
+		cleanup: false,
+	});
 	if (!prepared) return "pi-review dry run: nothing to review.";
 	const m = prepared.manifest;
 	const gate = config.gate;

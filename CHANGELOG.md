@@ -65,7 +65,10 @@ pi-subagents 0.55.0 source.
 - **No silent drops of unverifiable majors:** the gate must keep
   blocker/major candidates it cannot verify at the reviewer's original
   confidence with an `unverified:` reason (field: two real majors killed
-  2026-08-20; a confidence-7 real issue killed 2026-08-21).
+  2026-08-20; a confidence-7 real issue killed 2026-08-21). The report tool
+  enforces this code-side: `unverified:` blocker/major dispositions are
+  floored at the threshold (they survive into issues + verdict, evidence
+  flagged `(unverified)`).
 - **No confidence amplification without evidence:** never score above 8
   without the gate's own tool-verified evidence (field: an unverifiable
   "hand-edited generated file" claim became a confidence-10 blocker).

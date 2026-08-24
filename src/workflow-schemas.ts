@@ -131,7 +131,7 @@ export const GATE_OUTPUT_SCHEMA: JsonSchema = {
 						type: "array",
 						items: { type: "string" },
 					},
-					reason: { type: "string", minLength: 1, maxLength: 280 },
+					reason: { type: "string", minLength: 1, maxLength: 500 },
 				},
 			},
 		},

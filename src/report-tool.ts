@@ -84,6 +84,12 @@ function normalizeIssue(issue: Issue): Issue {
 	return { ...issue, confidence: 5 };
 }
 
+/** Clamp an externally supplied score (gate re-scores bypass schema paths). */
+function clampConfidence(value: unknown): number {
+	const n = typeof value === "number" && Number.isFinite(value) ? value : 5;
+	return Math.max(1, Math.min(10, Math.round(n)));
+}
+
 function isCoverage(v: unknown): v is ReviewerOutput["coverage"] {
 	return (
 		!!v &&
@@ -169,11 +175,23 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 
 	// 3) Apply gate final scores: replace raw confidence with the re-scored
 	//    finalConfidence for every candidate the gate dispositioned.
+	//    "unverified:" blocker/major dispositions are exempt from the
+	//    threshold floor below — the gate's verification duty says those must
+	//    stay visible to a human instead of dying in a numeric filter.
 	const finalCandidates = candidates.map((c) => {
 		const d = c.issue.fingerprint ? dispoByFp.get(c.issue.fingerprint) : undefined;
 		if (!d) return c;
+		let confidence = clampConfidence(d.finalConfidence);
+		const unverified =
+			/^unverified:/i.test(d.reason.trim()) &&
+			(c.issue.severity === "blocker" || c.issue.severity === "major");
+		if (unverified) confidence = Math.max(confidence, threshold);
 		return {
-			issue: { ...c.issue, confidence: d.finalConfidence },
+			issue: {
+				...c.issue,
+				confidence,
+				evidence: unverified ? `${c.issue.evidence} (unverified)` : c.issue.evidence,
+			},
 			sourceReviewers: c.sourceReviewers,
 		};
 	});

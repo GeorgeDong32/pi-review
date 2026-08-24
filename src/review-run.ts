@@ -13,7 +13,7 @@
  */
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { DEFAULT_CONFIG, loadConfig, resolveModel } from "./config.js";
 import { buildReviewDirective } from "./directive.js";
@@ -36,6 +36,7 @@ import {
 } from "./review-report.js";
 import {
 	prepareWorkspace,
+	removeWorkspaceRoot,
 	resetTargetWorkspaceCmd,
 	setTargetWorkspaceCmd,
 } from "./target-workspace.js";
@@ -48,6 +49,8 @@ export interface PrepareRunInput {
 	lite?: boolean;
 	/** Optional per-run gate model override. */
 	gateModel?: string;
+	/** Set false for dry-runs — pruning is a side effect a dry run must not have. */
+	cleanup?: boolean;
 }
 
 export interface PreparedRun {
@@ -65,9 +68,11 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 	const target = await resolveReviewTarget(input.cwd, { input: input.input });
 	if (!target) return null;
 
-	pruneStaleRuns(cwd);
-	pruneLegacyFlatArtifacts(cwd);
-	pruneStaleWorkspaces();
+	if (input.cleanup !== false) {
+		pruneStaleRuns(cwd);
+		pruneLegacyFlatArtifacts(cwd);
+		pruneStaleWorkspaces();
+	}
 
 	const runId = generateRunId();
 	const runDir = ensureRunDir(cwd, runId);
@@ -83,7 +88,9 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 	});
 	if (workspaceResult.cloned && diffResult.headSha && workspaceResult.workspaceHeadSha &&
 		workspaceResult.workspaceHeadSha !== diffResult.headSha) {
-		// Retry once — a force-push may have raced the first clone.
+		// The first clone's scratch root is garbage now — drop it before
+		// retrying so a moving PR does not litter tmpdir with depth-50 clones.
+		removeWorkspaceRoot(dirname(workspaceResult.workspacePath));
 		workspaceResult = await prepareWorkspace({
 			cwd,
 			target: { kind: target.kind, prRef: target.prRef, expectedHeadSha: diffResult.headSha },
@@ -277,11 +284,13 @@ async function acquirePrDiffViaGit(
 		}
 	}
 	const parsed = parsePrRepo(prRef);
-	const number = prMeta?.number ?? parsed?.number ?? prRef.match(/(\d+)/)?.[1] ?? "";
+	const number = prMeta?.number ?? parsed?.number ?? prRef.match(/pull\/(\d+)/i)?.[1] ?? "";
 	if (!number) {
 		throw new Error(`pi-review: could not parse PR number from ${prRef} — refusing to guess a diff base.`);
 	}
-	const baseName = prMeta?.baseRefName ?? "main";
+	// gh may be exactly what is failing here — fall back to the local repo's
+	// default-branch detection instead of assuming "main".
+	const baseName = prMeta?.baseRefName ?? (await detectDefaultBranch(cwd)) ?? "main";
 	const expectedHead = prMeta?.headRefOid;
 
 	// 1) Refresh the base remote-tracking ref (force handles rewind).
