@@ -124,6 +124,36 @@ describe("runReportTool", () => {
 		assert.match(res.markdown, /non-roster reviewer keys: history-context/);
 	});
 
+	test("workflowReturn with ONLY non-roster keys is rejected outright (no fabricated approve)", () => {
+		const { cwd, runId, manifest } = setupManifest();
+		writeManifest(join(cwd, ".pi", "pi-review", "runs", runId), {
+			...manifest,
+			reviewerIds: ["bugbot"],
+		});
+		const res = runReportTool({
+			runId,
+			cwd,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "history-context", // stale artifact, not this run's roster
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [MAJOR_ISSUE],
+							summary: "old run",
+							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+						},
+					},
+				],
+				gate: null,
+			},
+		});
+		assert.equal(res.ok, false);
+		if (res.ok) return;
+		assert.match(res.error, /no reviewer from this run's roster/);
+	});
+
 	test("gate finalConfidence re-score is applied (7 -> 8 survives threshold 8)", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({

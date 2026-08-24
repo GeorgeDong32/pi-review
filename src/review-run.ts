@@ -363,13 +363,19 @@ async function acquireLocalDiff(cwd: string, runDir: string): Promise<DiffAcquis
 		const untrackedParts: string[] = [];
 		for (const f of untracked.trim() ? untracked.trim().split("\n") : []) {
 			try {
-				const content = readFileSync(join(cwd, f), "utf-8");
-				const lines = content.split("\n");
+				const buf = readFileSync(join(cwd, f));
+				// NUL in the leading bytes marks a binary file — utf-8 coercion
+				// would turn it into megabytes of U+FFFD noise.
+				if (buf.subarray(0, 8000).includes(0)) {
+					untrackedParts.push(`diff --git a/${f} b/${f}\nnew file mode 100644\nBinary file ${f} added (contents not shown)\n`);
+					continue;
+				}
+				const lines = buf.toString("utf-8").split("\n");
 				untrackedParts.push(
 					`diff --git a/${f} b/${f}\nnew file mode 100644\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`,
 				);
 			} catch {
-				/* unreadable (binary / deleted race) — skip */
+				/* unreadable (permission / deleted race) — skip */
 			}
 		}
 		const text = [tracked.trim(), ...untrackedParts].filter(Boolean).join("\n");

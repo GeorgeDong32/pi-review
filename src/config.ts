@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { LEAN_BUDGETS } from "./lean-agents.js";
 import type { PiReviewConfig, ReviewerSpec, RoutingMode, VerdictPolicy } from "./types.js";
 
 /**
@@ -210,10 +211,14 @@ export function mergeWithDefaults(raw: unknown): PiReviewConfig {
 		}
 	}
 
-	// Optional budgets (directive path).
+	// Optional budgets (directive path). The empty-object fallback mirrors
+	// lean-agents' defaults — a hard-coded 20 here would silently regress the
+	// 26-turn default whenever a user wrote `budgets: {}`.
 	if (r.budgets && typeof r.budgets === "object" && !Array.isArray(r.budgets)) {
 		const b = r.budgets as Record<string, unknown>;
-		base.budgets = base.budgets ?? { turnBudget: { maxTurns: 20, graceTurns: 2 } };
+		base.budgets = base.budgets ?? {
+			turnBudget: { maxTurns: LEAN_BUDGETS.turnBudget.maxTurns, graceTurns: LEAN_BUDGETS.turnBudget.graceTurns },
+		};
 		if (b.turnBudget && typeof b.turnBudget === "object" && !Array.isArray(b.turnBudget)) {
 			const tb = b.turnBudget as Record<string, unknown>;
 			base.budgets.turnBudget = {

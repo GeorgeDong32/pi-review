@@ -141,6 +141,16 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 	const unknownKeys = reviewersRaw
 		.filter((r) => roster.size > 0 && !roster.has(r.key))
 		.map((r) => r.key);
+	if (unknownKeys.length > 0 && knownReviewers.length === 0) {
+		// Every finding came from outside this run's roster — almost certainly
+		// a workflowReturn reconstructed from stale artifacts after a failed
+		// workflow. Rendering a report here would fabricate a clean APPROVE
+		// over zero real reviewers; refuse instead.
+		return {
+			ok: false,
+			error: `workflowReturn contains no reviewer from this run's roster (got: ${unknownKeys.join(", ")}; roster: ${[...roster].join(", ")}). Findings appear to come from stale artifacts — re-run the review instead of reconstructing its return value.`,
+		};
+	}
 	const reviewerOutputs = knownReviewers.map((r) => ({
 		key: r.key,
 		ok: r.ok,
@@ -274,9 +284,9 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 		enforcedVerdict: enforced.verdict,
 		enforcedIssues: enforced.issues,
 		enforcedDispositions: dispositions,
-		enforcedReason: unknownKeys.length > 0
+		enforcedReason: (unknownKeys.length > 0
 			? `${enforced.reason} (dropped findings from non-roster reviewer keys: ${unknownKeys.join(", ")})`
-			: enforced.reason,
+			: enforced.reason).slice(0, 500),
 	});
 
 	const markdown = renderReport(built);
