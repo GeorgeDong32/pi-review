@@ -26,7 +26,6 @@ import {
 	ensureRunDir,
 	generateRunId,
 	parseChangedFilesFromDiff,
-	parsePrRepo,
 	pruneStaleRuns,
 	readManifest,
 	resetRunCmd,
@@ -121,6 +120,7 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		workspacePath: workspaceResult.workspacePath,
 		workspaceHeadSha: workspaceResult.workspaceHeadSha,
 		workspaceWarning: workspaceResult.warning,
+		workspaceCloned: workspaceResult.cloned,
 		diffWarning: diffResult.warning,
 		runDir,
 		createdAt: Date.now(),
@@ -229,6 +229,9 @@ async function acquirePrDiff(
 	prRef: string,
 	runDir: string,
 ): Promise<DiffAcquisitionResult> {
+	// Metadata first (base/head SHAs feed the manifest + workspace checkout
+	// reconciliation). A failed view is non-fatal — the diff below is the
+	// authority, not the metadata.
 	const gh = await _runCmd(
 		"gh",
 		["pr", "view", prRef, "--json", "number,baseRefName,baseRefOid,headRefOid,headRepository,headRepositoryOwner"],
@@ -250,104 +253,25 @@ async function acquirePrDiff(
 		}
 	}
 
+	// `gh pr diff` is the SINGLE diff authority: it is byte-for-byte what the
+	// GitHub web UI renders for the PR (same base/merge-base semantics). A
+	// locally computed `git diff origin/main...FETCH_HEAD` can diverge from
+	// that (different merge-base, ref timing), which is exactly the
+	// "diff does not match GitHub" failure class — so we never substitute our
+	// own computation. On failure we stop and tell the user to fix gh.
 	const ghDiff = await _runCmd("gh", ["pr", "diff", prRef], { cwd });
-	if (ghDiff.exitCode === 0 && ghDiff.stdout.trim().length > 0) {
-		const path = writeDiff(runDir, ghDiff.stdout);
-		return {
-			path,
-			diff: ghDiff.stdout,
-			mode: "gh-pr-diff",
-			baseSha: prMeta?.baseRefOid,
-			headSha: prMeta?.headRefOid,
-		};
-	}
-
-	return acquirePrDiffViaGit(cwd, prRef, runDir, 0);
-}
-
-/**
- * Git fallback when `gh pr diff` is unavailable.
- *
- * Hardening (post-mortem of the 2026-08-12 incident where a stale local ref
- * produced an 8583-line diff for a 3-file PR):
- *   - refresh the base remote-tracking ref with a forced fetch BEFORE
- *     computing the merge-base (a stale origin/main skews the whole diff);
- *   - fetch the PR head into FETCH_HEAD only — never a named branch, so a
- *     previously-created ref can never be silently reused;
- *   - verify the fetched head matches `gh pr view`'s headRefOid; on mismatch
- *     (PR force-pushed between calls) retry once, then fail loudly instead
- *     of reviewing the wrong commits.
- */
-async function acquirePrDiffViaGit(
-	cwd: string,
-	prRef: string,
-	runDir: string,
-	attempt: number,
-): Promise<DiffAcquisitionResult> {
-	const view = await _runCmd(
-		"gh",
-		["pr", "view", prRef, "--json", "number,baseRefName,baseRefOid,headRefOid"],
-		{ cwd },
-	);
-	let prMeta: { number?: string; baseRefName?: string; baseRefOid?: string; headRefOid?: string } | null = null;
-	if (view.exitCode === 0 && view.stdout.trim()) {
-		try {
-			prMeta = JSON.parse(view.stdout);
-		} catch {
-			prMeta = null;
-		}
-	}
-	const parsed = parsePrRepo(prRef);
-	const number = prMeta?.number ?? parsed?.number ?? prRef.match(/pull\/(\d+)/i)?.[1] ?? "";
-	if (!number) {
-		throw new Error(`pi-review: could not parse PR number from ${prRef} — refusing to guess a diff base.`);
-	}
-	// gh may be exactly what is failing here — fall back to the local repo's
-	// default-branch detection instead of assuming "main".
-	const baseName = prMeta?.baseRefName ?? (await detectDefaultBranch(cwd)) ?? "main";
-	const expectedHead = prMeta?.headRefOid;
-
-	// 1) Refresh the base remote-tracking ref (force handles rewind).
-	const baseFetch = await _runCmd(
-		"git",
-		["fetch", "origin", `+refs/heads/${baseName}:refs/remotes/origin/${baseName}`, "--quiet"],
-		{ cwd },
-	);
-	// 2) Fetch the PR head into FETCH_HEAD (no named ref → no stale reuse).
-	const headFetch = await _runCmd("git", ["fetch", "origin", `pull/${number}/head`, "--quiet"], { cwd });
-	if (baseFetch.exitCode !== 0 || headFetch.exitCode !== 0) {
+	if (ghDiff.exitCode !== 0) {
 		throw new Error(
-			`pi-review: git fallback failed to fetch PR ${number} (base: ${baseFetch.stderr.trim().slice(0, 120)}; head: ${headFetch.stderr.trim().slice(0, 120)}). Not falling back to stale local refs — check gh/git install + auth, network, and the origin remote, then re-run.`,
+			`pi-review: gh pr diff failed for ${prRef} (${ghDiff.stderr.trim().slice(0, 200)}). gh pr diff is the single diff authority (it matches the GitHub web UI exactly), so there is no local fallback — check gh auth/install and re-run. Details: ${ghDiff.stdout.trim().slice(0, 200)}`,
 		);
 	}
-	const fetchHead = (await _runCmd("git", ["rev-parse", "FETCH_HEAD"], { cwd })).stdout.trim();
-	if (!fetchHead) {
-		throw new Error(`pi-review: FETCH_HEAD empty after fetching PR ${number} — aborting instead of guessing.`);
-	}
-	if (expectedHead && fetchHead !== expectedHead) {
-		if (attempt === 0) {
-			// PR moved between gh view and fetch — one retry with fresh metadata.
-			return acquirePrDiffViaGit(cwd, prRef, runDir, attempt + 1);
-		}
-		throw new Error(
-			`pi-review: fetched PR ${number} head ${fetchHead.slice(0, 12)} != GitHub headRefOid ${expectedHead.slice(0, 12)} after retry — the PR is moving; re-run /review when it settles.`,
-		);
-	}
-
-	const baseRef = (await _runCmd("git", ["rev-parse", "--verify", `refs/remotes/origin/${baseName}`], { cwd })).exitCode === 0
-		? `refs/remotes/origin/${baseName}`
-		: `origin/${baseName}`;
-	const mergeBase = (await _runCmd("git", ["merge-base", baseRef, "FETCH_HEAD"], { cwd })).stdout.trim();
-	const diffRes = await _runCmd("git", ["diff", `${baseRef}...FETCH_HEAD`], { cwd });
-	const text = diffRes.stdout.length > 0 ? diffRes.stdout : "(no diff captured)\n";
-	const path = writeDiff(runDir, text);
+	const path = writeDiff(runDir, ghDiff.stdout);
 	return {
 		path,
-		diff: text,
-		mode: "git-pr-fallback",
-		baseSha: prMeta?.baseRefOid ?? mergeBase,
-		headSha: expectedHead ?? fetchHead,
-		mergeBase,
+		diff: ghDiff.stdout,
+		mode: "gh-pr-diff",
+		baseSha: prMeta?.baseRefOid,
+		headSha: prMeta?.headRefOid,
 	};
 }
 

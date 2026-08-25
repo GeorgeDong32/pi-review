@@ -148,9 +148,10 @@ describe("lean helpers", () => {
 
 	test("default turnBudget is 26 (raised from 20 — field runs wrapped partial)", () => {
 		assert.equal(LEAN_BUDGETS.turnBudget.maxTurns, 26);
-		// The gate must be able to actually verify high-severity candidates.
-		assert.ok(LEAN_BUDGETS.gateTurnBudget.maxTurns >= 12, "gate turns >= 12");
-		assert.ok(LEAN_BUDGETS.gateToolBudget.soft >= 10, "gate tool budget soft >= 10");
+		// The gate must be able to actually verify high-severity candidates
+		// (user-tuned 2026-08-25: 12 → 16 turns, 10 → 14 soft tools).
+		assert.ok(LEAN_BUDGETS.gateTurnBudget.maxTurns >= 16, "gate turns >= 16");
+		assert.ok(LEAN_BUDGETS.gateToolBudget.soft >= 14, "gate tool budget soft >= 14");
 	});
 
 	test("withThinkingSuffix", () => {

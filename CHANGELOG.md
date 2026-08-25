@@ -30,15 +30,33 @@ pi-subagents 0.55.0 source.
   mirror, `chatProgress` enum, acceptance mention) so the next pi-subagents
   release fails our tests first, not every `/review` in the field.
 
+### Changed — single diff authority + lifecycle (user decisions 2026-08-25)
+- **`gh pr diff` is the single PR diff authority.** It is byte-for-byte what
+  the GitHub web UI renders (same merge-base semantics), so a locally
+  computed `git diff origin/main...FETCH_HEAD` substitute — no matter how
+  carefully verified — can still diverge from what the user sees on the
+  web. The git fallback path was removed entirely: `gh pr diff` failure now
+  aborts the run with a clear "fix gh and re-run" error instead of
+  computing its own diff. (`git-pr-fallback` stays in the manifest mode
+  union only so pre-0.7.1 manifests keep parsing.)
+- **Gate budgets tuned up again (user feedback):** 12→16 turns, 10→14 soft
+  tools; wall clock 15→17 min. The verification duty (read the hunk + the
+  touched file per blocker/major) needs the headroom.
+- **End-of-run workspace reclamation:** a successful `pi_review_report`
+  immediately removes the run's plugin-owned tmpdir clone (the report is
+  already rendered + persisted). Concurrency-safe by construction — each
+  run allocates a unique `pi-review-ws-<ts>-<rand>` root and the manifest
+  records `workspaceCloned`, so reclamation never touches another run's
+  clone or the user's cwd. Runs that die before reaching the report tool
+  are still caught by the 24h TTL pruner on the next `prepareRun`.
+
 ### Fixed — diff correctness / stability
 - **No more stale-ref fallback:** the git fallback previously fetched
   `pull/N/head` into a named branch and — when that fetch failed — silently
   reused whatever branch was already there (2026-08-12: an 8583-line diff
   for a 3-file PR, two phantom blockers, `request_changes` on a clean PR).
-  It now refreshes the base remote-tracking ref with a forced fetch, fetches
-  the PR head into `FETCH_HEAD` only, verifies it against `gh pr view`'s
-  `headRefOid` (one retry on mismatch), and **fails loudly** instead of
-  reviewing the wrong commits.
+  As of the 2026-08-25 decision the fallback is gone altogether: the run
+  aborts instead of ever substituting a locally computed diff.
 - **Workspace/diff SHA reconciliation:** the target workspace checks out the
   PR head via `FETCH_HEAD` (detached) and its landed HEAD is compared with
   the diff's head SHA; a force-push race retries the clone once, then stops.
@@ -60,8 +78,8 @@ pi-subagents 0.55.0 source.
 
 ### Fixed — gate accuracy
 - **Gate can finally verify:** it receives the diff path + target workspace
-  cwd, its budgets rose from 6 turns / 5 soft tools to 12 turns / 10 soft
-  tools, and the wall clock from 10 to 15 minutes.
+  cwd, its budgets rose from 6 turns / 5 soft tools to 16 turns / 14 soft
+  tools (user-tuned), and the wall clock from 10 to 17 minutes.
 - **No silent drops of unverifiable majors:** the gate must keep
   blocker/major candidates it cannot verify at the reviewer's original
   confidence with an `unverified:` reason (field: two real majors killed

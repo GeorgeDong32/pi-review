@@ -45,7 +45,8 @@ export interface RunManifest {
 	rulePaths: string[];
 	/** True when reviewer `git log`/`blame` will work in the workspace. */
 	historyAvailable: boolean;
-	/** Detection mode: which path produced the diff. */
+	/** Detection mode: which path produced the diff. `git-pr-fallback` is
+	 *  legacy-only (pre-0.7.1) — PR diffs now come exclusively from gh. */
 	mode: "gh-pr-diff" | "git-pr-fallback" | "local-uncommitted" | "local-vs-default";
 	/** Base + head SHA when known (PR mode or local-vs-default). */
 	baseSha?: string;
@@ -57,6 +58,9 @@ export interface RunManifest {
 	workspaceHeadSha?: string;
 	/** Non-fatal workspace prep note surfaced in the report. */
 	workspaceWarning?: string;
+	/** True when the workspace is a plugin-owned tmpdir clone (safe to
+	 *  reclaim after the report renders); false = the user's cwd. */
+	workspaceCloned?: boolean;
 	/** Absolute path to the run directory (manifest + diff + history live here). */
 	runDir: string;
 	createdAt: number;

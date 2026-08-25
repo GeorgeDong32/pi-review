@@ -8,7 +8,7 @@
  *    7 major that the gate verified to 8 was still dropped at threshold 8.
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
@@ -152,6 +152,93 @@ describe("runReportTool", () => {
 		assert.equal(res.ok, false);
 		if (res.ok) return;
 		assert.match(res.error, /no reviewer from this run's roster/);
+	});
+
+	test("a successful report reclaims its cloned tmp workspace (end-of-run cleanup)", () => {
+		const { cwd, runId, manifest } = setupManifest();
+		// Simulate a plugin-owned scratch clone under the OS tmpdir.
+		const scratchRoot = mkdtempSync(join(tmpdir(), "pi-review-ws-"));
+		const cloneDir = join(scratchRoot, "some-repo-42");
+		mkdirSync(cloneDir, { recursive: true });
+		writeFileSync(join(cloneDir, "README.md"), "# scratch clone\n");
+		writeManifest(join(cwd, ".pi", "pi-review", "runs", runId), {
+			...manifest,
+			workspacePath: cloneDir,
+			workspaceCloned: true,
+		});
+		const res = runReportTool({
+			runId,
+			cwd,
+			threshold: 8,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "bugbot",
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [],
+							summary: "clean",
+							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+						},
+					},
+				],
+				gate: {
+					ok: true,
+					structuredOutput: {
+						status: "ok",
+						verdict: "approve",
+						issues: [],
+						dispositions: [],
+						reason: "clean",
+						coverage: { limitations: [] },
+					},
+				},
+			},
+		});
+		assert.equal(res.ok, true);
+		// The whole scratch root (not just the clone dir) is gone.
+		assert.equal(existsSync(scratchRoot), false, "cloned workspace reclaimed after report");
+	});
+
+	test("a non-cloned workspace (user cwd) is never touched by reclamation", () => {
+		const { cwd, runId, manifest } = setupManifest();
+		writeManifest(join(cwd, ".pi", "pi-review", "runs", runId), {
+			...manifest,
+			// local-git run: workspace IS the user's repo, no cloned flag.
+			workspaceCloned: false,
+		});
+		const res = runReportTool({
+			runId,
+			cwd,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "bugbot",
+						ok: true,
+						structuredOutput: {
+							status: "ok",
+							issues: [],
+							summary: "",
+							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
+						},
+					},
+				],
+				gate: {
+					ok: true,
+					structuredOutput: {
+						status: "ok",
+						verdict: "approve",
+						issues: [],
+						dispositions: [],
+						reason: "",
+						coverage: { limitations: [] },
+					},
+				},
+			},
+		});
+		assert.equal(res.ok, true);
+		assert.equal(existsSync(cwd), true, "user cwd must survive report reclamation");
 	});
 
 	test("gate finalConfidence re-score is applied (7 -> 8 survives threshold 8)", () => {

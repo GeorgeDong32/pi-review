@@ -7,11 +7,12 @@
  * adapts it to `pi.registerTool`.
  */
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { enforceGateOutput, type VerdictPolicy } from "./gate-enforce.js";
 import { buildReportFromWorkflow, renderReport } from "./report.js";
 import { readManifest, RunManifest } from "./review-report.js";
+import { removeWorkspaceRoot } from "./target-workspace.js";
 import type {
 	GateDisposition,
 	Issue,
@@ -290,6 +291,15 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 	});
 
 	const markdown = renderReport(built);
+	// End-of-run reclamation: the report is rendered and persisted, so the
+	// plugin-owned scratch clone has no further reader. Only cloned
+	// workspaces are touched (never the user's cwd), and each run owns a
+	// unique tmpdir root, so concurrent reviews never collide. Runs that
+	// never reach this tool (failed workflow) are still caught by the 24h
+	// TTL pruner on the next prepareRun.
+	if (manifest.workspaceCloned) {
+		removeWorkspaceRoot(dirname(manifest.workspacePath));
+	}
 	return {
 		ok: true,
 		runId: input.runId,

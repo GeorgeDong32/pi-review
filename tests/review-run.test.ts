@@ -393,76 +393,10 @@ describe("prepareRun — config wiring (round-2 adversarial findings)", () => {
 	});
 });
 
-describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
+describe("gh pr diff is the single diff authority (user decision 2026-08-25)", () => {
 	const PR = "https://github.com/o/r/pull/33";
 
-	/**
-	 * Stateful fetch tracker: FETCH_HEAD reflects the MOST RECENT fetch, so a
-	 * regression that reorders the base fetch after the head fetch (the
-	 * 2026-08-12 bug class) flips FETCH_HEAD to the base and fails the
-	 * headRefOid verification below.
-	 */
-	function fetchTrackingCmds(prHead = "H1") {
-		let lastFetch: "base" | "head" | null = null;
-		const reviewRunPlan: Record<string, (args: string[]) => { stdout: string; stderr: string; exitCode: number }> = {
-			gh: (args) => {
-				if (args[0] === "pr" && args[1] === "view") {
-					return {
-						stdout: JSON.stringify({ number: "33", baseRefName: "main", baseRefOid: "b0", headRefOid: prHead }),
-						stderr: "",
-						exitCode: 0,
-					};
-				}
-				return { stdout: "", stderr: "no diff", exitCode: 1 };
-			},
-			"git fetch": (args) => {
-				const refspec = args.find((a) => a.includes("refs/heads/") || a.includes("pull/")) ?? "";
-				lastFetch = refspec.includes("pull/") ? "head" : "base";
-				return { stdout: "", stderr: "", exitCode: 0 };
-			},
-			"git rev-parse": (args) => {
-				if (args.includes("FETCH_HEAD")) {
-					// FETCH_HEAD must come from the PR-head fetch, not the base refresh.
-					return lastFetch === "head"
-						? { stdout: `${prHead}\n`, stderr: "", exitCode: 0 }
-						: { stdout: "\n", stderr: "FETCH_HEAD is the base ref", exitCode: 1 };
-				}
-				return { stdout: "mb0\n", stderr: "", exitCode: 0 };
-			},
-			"git merge-base": () => ({ stdout: "mb0\n", stderr: "", exitCode: 0 }),
-			"git diff": () => ({
-				stdout: "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n",
-				stderr: "",
-				exitCode: 0,
-			}),
-		};
-		return { reviewRunPlan, orderLog: () => lastFetch };
-	}
-
-	test("fallback verifies FETCH_HEAD against headRefOid and uses it for the diff", async () => {
-		const cwd = setup();
-		const { reviewRunPlan } = fetchTrackingCmds("H1");
-		let viewCalls = 0;
-		const plan = { ...reviewRunPlan };
-		plan.gh = (args: string[]) => {
-			if (args[0] === "pr" && args[1] === "view") viewCalls++;
-			return reviewRunPlan.gh!(args);
-		};
-		setReviewRunCmd(fakeCmd(plan));
-		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
-
-		const prepared = await prepareRun({ cwd, input: PR });
-		assert.ok(prepared);
-		assert.equal(prepared!.manifest.mode, "git-pr-fallback");
-		assert.equal(prepared!.manifest.headSha, "H1");
-		assert.equal(prepared!.manifest.mergeBase, "mb0");
-		// 2 views: one from acquirePrDiff, one fresh from the git fallback —
-		// a mismatch retry would make it 3.
-		assert.equal(viewCalls, 2, "fresh metadata, no mismatch retry");
-		rmSync(dirname(prepared!.manifest.workspacePath), { recursive: true, force: true });
-	});
-
-	test("FETCH_HEAD mismatch after one retry fails loudly (no wrong-diff review)", async () => {
+	test("gh pr diff failure aborts the run — no locally computed substitute", async () => {
 		const cwd = setup();
 		setReviewRunCmd(
 			fakeCmd({
@@ -474,40 +408,52 @@ describe("git-pr-fallback hardening (2026-08-12 stale-ref incident)", () => {
 							exitCode: 0,
 						};
 					}
-					return { stdout: "", stderr: "no", exitCode: 1 };
+					// pr diff fails (auth, network, missing gh…)
+					return { stdout: "", stderr: "gh: auth required", exitCode: 1 };
 				},
-				"git fetch": () => ({ stdout: "", stderr: "", exitCode: 0 }),
-				"git rev-parse": (args) => {
-					// The remote head keeps disagreeing with gh metadata.
-					if (args.includes("FETCH_HEAD")) return { stdout: "XXX\n", stderr: "", exitCode: 0 };
-					return { stdout: "mb0\n", stderr: "", exitCode: 0 };
+				// Even a perfectly working local git must NOT be consulted.
+				"git fetch": () => {
+					throw new Error("git must not be called for a PR diff");
 				},
-				"git merge-base": () => ({ stdout: "mb0\n", stderr: "", exitCode: 0 }),
-				"git diff": () => ({ stdout: "", stderr: "", exitCode: 0 }),
 			}),
 		);
 		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
 
 		await assert.rejects(
 			() => prepareRun({ cwd, input: PR }),
-			/!= GitHub headRefOid .+ after retry/,
+			/gh pr diff is the single diff authority/,
 		);
 	});
 
-	test("failed fetch throws instead of reusing a stale local ref", async () => {
+	test("manifest records workspaceCloned so the report can reclaim tmp clones", async () => {
 		const cwd = setup();
 		setReviewRunCmd(
 			fakeCmd({
-				gh: () => ({ stdout: "", stderr: "gh unavailable", exitCode: 1 }),
-				"git fetch": () => ({ stdout: "", stderr: "network down", exitCode: 128 }),
+				gh: (args) => {
+					if (args[0] === "pr" && args[1] === "view") {
+						return {
+							stdout: JSON.stringify({ number: "36", baseRefName: "main", headRefOid: "h1" }),
+							stderr: "",
+							exitCode: 0,
+						};
+					}
+					if (args[0] === "pr" && args[1] === "diff") {
+						return { stdout: "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n", stderr: "", exitCode: 0 };
+					}
+					return { stdout: "", stderr: "no", exitCode: 1 };
+				},
 			}),
 		);
-		setTargetWorkspaceCmd(async () => ({ stdout: "", stderr: "", exitCode: 0 }));
-
-		await assert.rejects(
-			() => prepareRun({ cwd, input: PR }),
-			/Not falling back to stale local refs/,
-		);
+		setTargetWorkspaceCmd(async (cmd, args) => {
+			if (cmd === "git" && args[0] === "rev-parse" && args.includes("HEAD")) {
+				return { stdout: "h1\n", stderr: "", exitCode: 0 };
+			}
+			return { stdout: "", stderr: "", exitCode: 0 };
+		});
+		const prepared = await prepareRun({ cwd, input: "https://github.com/o/r/pull/36" });
+		assert.ok(prepared);
+		assert.equal(prepared!.manifest.workspaceCloned, true);
+		assert.equal(prepared!.manifest.mode, "gh-pr-diff");
 	});
 
 	test("outer TOCTOU: workspace HEAD mismatch retries, converging run succeeds", async () => {

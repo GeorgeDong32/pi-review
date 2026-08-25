@@ -45,17 +45,18 @@ export interface LeanBudgetSpec {
 
 /**
  * Defaults (v0.7.1): reviewers 20→26 turns (field runs kept wrapping up
- * partial at 20); the gate 6→12 turns / 5→10 soft tools — it now carries a
- * verification duty on high-severity candidates and physically could not
- * verify anything under the old budget. Wall clock 10→15 min to match.
+ * partial at 20); the gate 6→16 turns / 5→14 soft tools — it now carries a
+ * verification duty on high-severity candidates (read the diff hunk + the
+ * touched file) and physically could not verify anything under the old
+ * budget. Wall clock 10→17 min to match.
  */
 export const LEAN_BUDGETS: LeanBudgetSpec = {
 	turnBudget: { maxTurns: 26, graceTurns: 2 },
 	defaultToolBudget: { soft: 20, hard: 32 },
 	historyToolBudget: { soft: 14, hard: 24 },
-	gateTurnBudget: { maxTurns: 12, graceTurns: 2 },
-	gateToolBudget: { soft: 10, hard: 16 },
-	timeoutMs: 900_000,
+	gateTurnBudget: { maxTurns: 16, graceTurns: 2 },
+	gateToolBudget: { soft: 14, hard: 20 },
+	timeoutMs: 1_000_000,
 };
 
 export function toolBudgetForReviewer(id: string): ToolBudgetSpec {
