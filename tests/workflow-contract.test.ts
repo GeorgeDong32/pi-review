@@ -14,6 +14,9 @@
  *    inline so the final script parses as valid JS (see assertScriptParses).
  */
 import { strict as assert } from "node:assert";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test } from "node:test";
 
 import { buildReviewDirective } from "../src/directive.js";
@@ -161,15 +164,12 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 	});
 
 	test("workflowPath writes the raw script to disk (retry source for the main agent)", () => {
-		const { mkdtempSync, writeFileSync, rmSync, existsSync } = require("node:fs") as typeof import("node:fs");
-		const { tmpdir } = require("node:os") as typeof import("node:os");
-		const { join } = require("node:path") as typeof import("node:path");
 		const dir = mkdtempSync(join(tmpdir(), "pi-review-wf-"));
 		const wf = join(dir, "workflow.js");
 		const d = buildReviewDirective(baseInput({ workflowPath: wf }));
 		const script = scriptOf(d);
 		assert.ok(existsSync(wf), "workflow.js must be written");
-		assert.equal(require("node:fs").readFileSync(wf, "utf-8"), script);
+		assert.equal(readFileSync(wf, "utf-8"), script);
 		rmSync(dir, { recursive: true, force: true });
 	});
 
