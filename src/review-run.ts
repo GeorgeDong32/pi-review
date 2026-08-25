@@ -153,6 +153,10 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 	const workspacePath = manifest.workspacePath;
 	const manifestPath = join(runDir, "manifest.json");
 	const diffPath = manifest.diffPath;
+	// Raw workflowScript text — the directive embeds it as a template literal
+	// and points failed-copy retries at this file (no double-escaping, which
+	// used to make the main agent's copy/unescape step error-prone).
+	const workflowPath = join(runDir, "workflow.js");
 	// Build the directive with real paths inlined (JSON.stringify'd into the
 	// workflowScript) — no placeholder + replaceAll substitutions. The old
 	// replaceAll injected unquoted paths into the JS template, producing
@@ -170,6 +174,7 @@ export async function prepareRun(input: PrepareRunInput): Promise<PreparedRun | 
 		workspacePath,
 		manifestPath,
 		diffPath,
+		workflowPath,
 		budgets: resolveLeanBudgets(config.budgets),
 	});
 	// Remember which lanes adaptive routing dropped so the report can surface

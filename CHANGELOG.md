@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.2] - 2026-08-25
+
+Hotfix for the PR 19395 incident (2026-08-25, first run of v0.7.1): the
+review stalled for 40+ minutes with "Workflow failed: workflowScript must
+be valid JavaScript" three times in a row, then the main agent drifted into
+hand-debugging the generated script.
+
+### Fixed
+- **The generated workflowScript is now presented to the main agent as an
+  unescaped template literal (backticks), not a double-escaped JSON string.**
+  The script body contains no backticks and no `${` (enforced by a plugin
+  guard + contract test), so a straight copy is a valid script — there is
+  nothing left for the main agent to unescape, which is exactly what failed:
+  `subagent({ workflowScript: "...\\\"...\\n..." })` required the model to
+  reverse the escaping while copying a 19 KB body, and any slip produced a
+  syntax error (`summary"`typos,"`\"` lost, etc.).
+- **The raw script is persisted to `.pi/pi-review/runs/<runId>/workflow.js`
+  as an additional retry source.** If the copy is rejected with a parse
+  error, the hard rule now says: `Read` `workflow.js` and repeat the call
+  with exactly that content — once; on a second failure stop and notify the
+  user. Hand-editing, re-quoting, or "fixing" the script is explicitly
+  forbidden (the old rule allowed one fix and the model silently looped far
+  beyond that).
+- Plugin-side guard: if a future script template ever introduces a backtick
+  or `${`, `buildReviewDirective` refuses to build the directive with a
+  clear "plugin bug" error instead of feeding a corrupted copy to the model.
+
+[0.7.2]: https://github.com/GeorgeDong32/pi-review/compare/v0.7.1...v0.7.2
+
 ## [0.7.1] - 2026-08-25
 
 Post-mortem of the 2026-08 field reports (false positives, wrong diffs, gate

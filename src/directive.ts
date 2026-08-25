@@ -15,6 +15,8 @@
  *   - Step 3 hands off to the `pi_review_report` tool, which is the only
  *     authoritative report renderer (deterministic code-side verdict).
  */
+import { writeFileSync } from "node:fs";
+
 import {
 	FALSE_POSITIVE_GUIDANCE,
 	LEAN_BUDGETS,
@@ -47,12 +49,21 @@ export interface ReviewDirectiveInput {
 	manifestPath: string;
 	/** Absolute path to the captured change.diff. */
 	diffPath: string;
+	/**
+	 * Absolute path to write the raw workflowScript text. When set, the raw
+	 * script is persisted here and the directive points the main agent at it
+	 * (retry path) instead of asking it to re-derive the script from a
+	 * double-escaped JSON string — see the 2026-08-25 PR 19395 incident where
+	 * the main agent's copy/unescape of the script produced a syntax error
+	 * three times and then drifted into hand-debugging.
+	 */
+	workflowPath?: string;
 	/** Optional turnBudget override from config.budgets. */
 	budgets?: LeanBudgetSpec;
 }
 
 export function buildReviewDirective(input: ReviewDirectiveInput): string {
-	const { target, reviewers, gateModel, gateThinking, threshold, lite, cwd, workspacePath, manifestPath, diffPath } = input;
+	const { target, reviewers, gateModel, gateThinking, threshold, lite, cwd, workspacePath, manifestPath, diffPath, workflowPath } = input;
 	const policy = input.verdictPolicy ?? "strict";
 	const gateOn = !lite && input.gateEnabled !== false;
 	const budgets = input.budgets ?? resolveLeanBudgets();
@@ -82,8 +93,9 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push(
 		"- **Do not retry** or re-spawn if a reviewer times out, hits its turnBudget, returns partial output, or fails — `runs.all` collects failures as `{ ok:false }`; the script continues and you mark failures in the report.",
 	);
+	const retryScriptHint = workflowPath ? `Read-tool \`${workflowPath}\`` : "the Read tool on the workflow.js file";
 	blocks.push(
-		"- **Exception (script-level failure):** if the `subagent` call is rejected because the `workflowScript` **fails to parse** (no reviewer ever started — e.g. a syntax error in the script literal), you may correct the quoting/wrapping of the generated script and call `subagent` **once more**. Do not retry any reviewer that already started and failed.",
+		"- **Exception (script-level failure):** if the `subagent` call is rejected because the `workflowScript` **fails to parse** (no reviewer ever started — e.g. a syntax error in the script literal), retry **once**: use the " + retryScriptHint + " and repeat the call with exactly that file content as `workflowScript`. Do **not** hand-edit, re-quote, or fix the script text yourself — if the retry also fails, stop and notify the user. Do not retry any reviewer that already started and failed.",
 	);
 	blocks.push("- **Do not** call `subagent` for verification, re-review, or rewriting the report.");
 	blocks.push(
@@ -94,7 +106,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	);
 	blocks.push("- Reviewer models **inherit** the parent session (omit per-child `model` unless the reviewer config sets an explicit model).");
 	blocks.push(
-		"- Copy the `workflowScript` below **exactly as written** into the `subagent({ workflowScript: ... })` call — every character matters (paths, `outputSchema` JSON, and budgets are already generated). Do not re-format, re-indent, or shorten it; a mistyped script is a script-level failure you may fix once only.",
+		"- The `workflowScript` value below is a **template literal (backticks)** whose content is the exact text of the run's `workflow.js`. Copy its content verbatim — every character matters (paths, `outputSchema` JSON, budgets are already generated). Do not re-format, re-indent, unescape, or shorten it; the backtick form is unescaped by design so a straight copy is a valid script.",
 	);
 	blocks.push("");
 	blocks.push(`**Skip these false positives:** ${FALSE_POSITIVE_GUIDANCE}.`);
@@ -151,6 +163,35 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		manifestPath,
 		diffPath,
 	});
+
+	// Parse guard (P0 regression): make sure the generated script is valid JS
+	// BEFORE it reaches the main agent. If the template ever regresses — or,
+	// critically, if it ever grows a backtick or `${` (which would break the
+	// template-literal presentation the main agent copies) — fail here instead
+	// of at subagent() time.
+	if (/[`$]/.test(script)) {
+		throw new Error(
+			"pi-review: generated workflowScript contains a backtick or `$` (template-literal conflict) — the directive presents it inside backticks, so this would corrupt the main agent's copy. This is a plugin bug; please report it.",
+		);
+	}
+	try {
+		new Function(`return (async () => {\n${script}\n})`);
+	} catch (err) {
+		throw new Error(
+			`pi-review: generated workflowScript is not valid JavaScript — refusing to hand it to the main agent. This is a plugin bug; please report it. Underlying error: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+
+	// Persist the raw script text so the main agent has a zero-unescape
+	// retry source (see ReviewDirectiveInput.workflowPath).
+	if (workflowPath) {
+		try {
+			writeFileSync(workflowPath, script, "utf-8");
+		} catch {
+			// Directive still works from the template literal below.
+		}
+	}
+
 	blocks.push("## Step 2 — Run the review (exactly one subagent workflowScript call)");
 	blocks.push("");
 	blocks.push(
@@ -163,7 +204,11 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push("");
 	blocks.push("```js");
 	blocks.push("subagent({");
-	blocks.push(`  workflowScript: ${JSON.stringify(script)},`);
+	blocks.push("  workflowScript: `");
+	// The raw script, verbatim (no escaping). The script contains no
+	// backticks and no ${, so the template literal is lossless.
+	blocks.push(script);
+	blocks.push("`,");
 	blocks.push(`  async: false,`);
 	blocks.push(`  context: "fresh",`);
 	blocks.push(`  timeoutMs: ${budgets.timeoutMs},`);
@@ -172,7 +217,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push("```");
 	blocks.push("");
 	blocks.push(
-		"The return value is a JSON object: `{ reviewers: [{ key, ok, output, structuredOutput, status }], gate: { ok, output, structuredOutput } | null }`. Pass the whole object into `pi_review_report` — the tool is the source of truth for verdict, dedupe, and rendering.",
+		`Copy the SUBAGENT CALL above verbatim (the workflowScript template-literal content is the exact text of \`${workflowPath ?? "workflow.js"}\`). If the call is rejected with a script parse error, \`Read\` the workflow.js file and repeat the call with that content — one retry only, no hand-editing.`,
 	);
 	blocks.push("");
 

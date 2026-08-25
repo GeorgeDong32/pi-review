@@ -26,14 +26,16 @@ const MANIFEST = "/tmp/pi-review-contract/.pi/pi-review/runs/r1/manifest.json";
 const DIFF = "/tmp/pi-review-contract/.pi/pi-review/runs/r1/change.diff";
 
 /**
- * Extract the `workflowScript: "..."` JSON string literal from the directive
- * and JSON.parse it back into the plain script body. Much more robust than
- * asserting against the escaped JSON form.
+ * Extract the workflowScript from the directive. Since v0.7.2 the script is
+ * presented as a template literal (backticks) with no escaping — the main
+ * agent copies it verbatim (the 2026-08-25 PR 19395 incident: the old
+ * double-escaped JSON string form made the copy/unescape step produce
+ * `workflowScript must be valid JavaScript` three times).
  */
 function scriptOf(d: string): string {
-	const m = d.match(/workflowScript: ("(?:\\.|[^"\\])*")/);
-	assert.ok(m, "expected a workflowScript JSON string literal in the directive");
-	return JSON.parse(m[1]!);
+	const m = d.match(/workflowScript: `\n([\s\S]*?)\n`,\s*\n\s*async: false/);
+	assert.ok(m, "expected a workflowScript template-literal block in the directive");
+	return m[1]!;
 }
 
 /**
@@ -133,7 +135,9 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.match(d, /async: false/);
 		assert.match(d, /context: "fresh"/);
 		assert.match(d, /timeoutMs: \d+/);
-		assert.match(d, /workflowScript: "const reviewers = await runs\.all\(\[/);
+		// v0.7.2: the script is presented as an unescaped template literal
+		// (the double-escaped JSON string form broke the main agent's copy).
+		assert.match(d, /workflowScript: `\nconst reviewers = await runs\.all\(\[/);
 	});
 
 	test("P0: the generated workflowScript parses as valid JS (unquoted-path regression)", () => {
@@ -142,6 +146,31 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assertScriptParses(script);
 		// cwd values are the actual workspace path, JSON-quoted.
 		assert.match(script, new RegExp(`cwd: ${JSON.stringify(WORKSPACE)}`));
+	});
+
+	test("v0.7.2: the script is presented verbatim inside a template literal (no escaping for the main agent to undo)", () => {
+		const d = buildReviewDirective(baseInput());
+		const script = scriptOf(d);
+		// Template-literal safety: the script must never contain a backtick or
+		// ${ — a single one would corrupt the directive presentation.
+		assert.doesNotMatch(script, /[`$]/);
+		// The full script body appears in the directive unescaped.
+		assert.ok(d.includes(script), "directive must embed the raw script text");
+		// And the literal is a template literal, not a JSON string.
+		assert.doesNotMatch(d, /workflowScript: "/);
+	});
+
+	test("workflowPath writes the raw script to disk (retry source for the main agent)", () => {
+		const { mkdtempSync, writeFileSync, rmSync, existsSync } = require("node:fs") as typeof import("node:fs");
+		const { tmpdir } = require("node:os") as typeof import("node:os");
+		const { join } = require("node:path") as typeof import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "pi-review-wf-"));
+		const wf = join(dir, "workflow.js");
+		const d = buildReviewDirective(baseInput({ workflowPath: wf }));
+		const script = scriptOf(d);
+		assert.ok(existsSync(wf), "workflow.js must be written");
+		assert.equal(require("node:fs").readFileSync(wf, "utf-8"), script);
+		rmSync(dir, { recursive: true, force: true });
 	});
 
 	test("P0: paths are inlined via JSON.stringify — no placeholder tokens survive", () => {
