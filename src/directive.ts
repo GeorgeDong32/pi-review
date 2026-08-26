@@ -379,10 +379,14 @@ export function buildWorkflowScript(input: {
 	}
 	lines.push("]);");
 	lines.push("");
-	lines.push("return {");
-	lines.push("  reviewers,");
 
 	// ---- gate ----------------------------------------------------------
+	// Top-level statements ONLY: pi-subagents' workflowScript AST walker
+	// rejects nested async functions ("Use top-level await, plain helper
+	// functions, or explicit Promise chains"). The pre-0.7.4 form
+	// `gate: await (async () => { ... })()` therefore never passed upstream
+	// validation — every prior failure that survived the copy stage died
+	// here (2026-08-26 session: "validation failed before child launch").
 	if (gateOn) {
 		const gateTaskParts = [
 			READ_ONLY_PREFIX,
@@ -402,42 +406,45 @@ export function buildWorkflowScript(input: {
 			`Output structuredOutput matching GATE_SCHEMA (verdict, issues[], dispositions[], reason).`,
 		];
 
-		lines.push("  gate: await (async () => {");
-		// Inline the reviewer structuredOutput objects into the gate task.
-		// We can't JSON.stringify them yet (they don't exist), so we build a
-		// gateInput array using the captured reviewers list and pass it as
-		// the task string at runtime.
-		lines.push("    const reviewerInputs = reviewers.map((r) => ({");
-		lines.push("      key: r.key,");
-		lines.push("      ok: r.ok,");
-		lines.push("      error: r.error,");
-		lines.push("      status: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput.status : (r.ok ? 'limited' : 'failed'),");
-		lines.push("      issues: r.ok && r.structuredOutput && Array.isArray(r.structuredOutput.issues) ? r.structuredOutput.issues : [],");
-		lines.push("      coverage: r.ok && r.structuredOutput && r.structuredOutput.coverage ? r.structuredOutput.coverage : { filesChecked: [], commandsRun: [], limitations: [r.ok ? 'no structuredOutput' : 'reviewer failed'] },");
-		lines.push("    }));");
+		// Build the gate's inlined reviewer findings from the captured list
+		// (sync arrow — allowed; only async functions are rejected).
+		lines.push("const reviewerInputs = reviewers.map((r) => ({");
+		lines.push("  key: r.key,");
+		lines.push("  ok: r.ok,");
+		lines.push("  error: r.error,");
+		lines.push("  status: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput.status : (r.ok ? 'limited' : 'failed'),");
+		lines.push("  issues: r.ok && r.structuredOutput && Array.isArray(r.structuredOutput.issues) ? r.structuredOutput.issues : [],");
+		lines.push("  coverage: r.ok && r.structuredOutput && r.structuredOutput.coverage ? r.structuredOutput.coverage : { filesChecked: [], commandsRun: [], limitations: [r.ok ? 'no structuredOutput' : 'reviewer failed'] },");
+		lines.push("}));");
 		// Gate task as an array join (short lines) — same copy-safety rule as
 		// the reviewer tasks above.
-		lines.push("    const gateTask = [");
+		lines.push("const gateTask = [");
 		for (const part of gateTaskParts) {
-			lines.push(`      ${JSON.stringify(part)},`);
+			lines.push(`  ${JSON.stringify(part)},`);
 		}
-		lines.push(`    ].join(" ") + '\\n\\n## Reviewer findings (structuredOutput)\\n' + JSON.stringify(reviewerInputs);`);
-		lines.push("    const result = await runs.run('gate', {");
-		lines.push(`      agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
-		lines.push("      task: gateTask,");
-		lines.push(`      cwd: ${JSON.stringify(workspacePath)},`);
-		lines.push(`      model: ${JSON.stringify(gateModelWithThinking)},`);
-		lines.push(`      toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
-		lines.push(`      turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
-		lines.push(`      outputSchema: GATE_SCHEMA,`);
-		lines.push("    });");
-		lines.push("    return {");
-		lines.push("      ok: result.ok,");
-		lines.push("      error: result.error,");
-		lines.push("      output: result.output,");
-		lines.push("      structuredOutput: result.ok && result.structuredOutput && typeof result.structuredOutput === 'object' ? result.structuredOutput : null,");
-		lines.push("    };");
-		lines.push("  })(),");
+		lines.push(`].join(" ") + '\\n\\n## Reviewer findings (structuredOutput)\\n' + JSON.stringify(reviewerInputs);`);
+		lines.push("const gateRun = await runs.run('gate', {");
+		lines.push(`  agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
+		lines.push("  task: gateTask,");
+		lines.push(`  cwd: ${JSON.stringify(workspacePath)},`);
+		lines.push(`  model: ${JSON.stringify(gateModelWithThinking)},`);
+		lines.push(`  toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
+		lines.push(`  turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
+		lines.push(`  outputSchema: GATE_SCHEMA,`);
+		lines.push("});");
+		lines.push("const gate = {");
+		lines.push("  ok: gateRun.ok,");
+		lines.push("  error: gateRun.error,");
+		lines.push("  output: gateRun.output,");
+		lines.push("  structuredOutput: gateRun.ok && gateRun.structuredOutput && typeof gateRun.structuredOutput === 'object' ? gateRun.structuredOutput : null,");
+		lines.push("};");
+		lines.push("");
+	}
+
+	lines.push("return {");
+	lines.push("  reviewers,");
+	if (gateOn) {
+		lines.push("  gate,");
 	} else {
 		lines.push("  gate: null,");
 	}

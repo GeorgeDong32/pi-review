@@ -100,11 +100,13 @@ function baseInput(overrides: Partial<Parameters<typeof buildReviewDirective>[0]
 }
 
 function runsAllOf(script: string): string {
-	return script.slice(script.indexOf("runs.all(["), script.indexOf("gate: await"));
+	const start = script.indexOf("runs.all([");
+	const end = script.indexOf("]);");
+	return script.slice(start, end + 4);
 }
 
 function gateBlockOf(script: string): string {
-	return script.slice(script.indexOf("gate: await"));
+	return script.slice(script.indexOf("const reviewerInputs"));
 }
 
 describe("buildReviewDirective — pi-subagents API contract", () => {
@@ -411,6 +413,23 @@ describe("pi-subagents ≥0.55 read-only task classification", () => {
 		// modify" — the bare "modify" hit GENERAL_IMPLEMENTATION_PATTERNS and
 		// got the read-only gate rejected by pi-subagents 0.55.0.
 		assert.doesNotMatch(FALSE_POSITIVE_GUIDANCE, /\b(implement|edit|modify|refactor|update|remove|replace|delete|create)\b/i);
+	});
+
+	test("P0: no nested async functions (pi-subagents AST walker rejects them)", () => {
+		// Real failure (2026-08-26 session): the gate was launched as
+		// `gate: await (async () => {...})()`. Every copy that survived the
+		// syntax stage then died at upstream AST validation — "workflowScript
+		// does not support nested async functions". The upstream walker
+		// (scripted-workflow.ts) rejects async functions outside its wrapper.
+		// Our generator is fully controlled output, so ANY occurrence of the
+		// `async` keyword in the script is a violation (the runtime wraps the
+		// body in an async IIFE itself; sync arrows for .map() are fine).
+		const d = buildReviewDirective(baseInput());
+		const script = scriptOf(d);
+		assert.doesNotMatch(script, /\basync\b/, "workflowScript must not contain any async functions");
+		// And the gate launch is a top-level statement.
+		assert.match(script, /^const gateRun = await runs\.run\('gate', \{$/m);
+		assert.doesNotMatch(script, /gate: await/);
 	});
 });
 

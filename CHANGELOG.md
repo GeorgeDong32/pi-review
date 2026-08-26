@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.4] - 2026-08-27
+
+Hotfix for the 2026-08-26 16:14 session: with v0.7.3's short-line script the
+main agent's copy finally survived intact — and the workflow was then
+rejected by pi-subagents' **AST validation**: "workflowScript does not
+support nested async functions". The gate had been launched as
+`gate: await (async () => { ... })()` since v0.7.0: an async IIFE, which the
+upstream walker (scripted-workflow.ts) rejects outright. Every earlier
+failure that got past the syntax stage had died at this same check — it was
+simply invisible while copies were corrupting the script first.
+
+### Fixed
+- **The gate launch is now plain top-level statements** — `const
+  reviewerInputs = reviewers.map(...)` (sync arrows are allowed), `const
+  gateRun = await runs.run('gate', {...})`, `const gate = {...}`, then
+  `return { reviewers, gate, reviewersShaped }`. No async IIFE anywhere.
+- **Verified against the real installed pi-subagents 0.55.0
+  `validateWorkflowScript`** (exported from the package): full and lite
+  scripts both pass, and the script still executes end-to-end with stub
+  runs.
+- Contract test pins the constraint: the generated script must contain no
+  `async` keyword at all (the runtime wraps the body itself), and the gate
+  launch must be a top-level `const gateRun = await runs.run('gate', {`.
+
+[0.7.4]: https://github.com/GeorgeDong32/pi-review/compare/v0.7.3...v0.7.4
+
 ## [0.7.3] - 2026-08-26
 
 Hotfix for the PR 19291 incident (first run of v0.7.2): the main agent
