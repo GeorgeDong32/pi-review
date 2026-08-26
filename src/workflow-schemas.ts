@@ -154,3 +154,19 @@ export const GATE_OUTPUT_SCHEMA: JsonSchema = {
 export function serializeSchemaForJs(schema: JsonSchema): string {
 	return JSON.stringify(schema);
 }
+
+/**
+ * Serialize a JSON Schema as a multi-line JS object literal for embedding
+ * directly in the generated workflowScript (v0.7.3). The single-line form
+ * produced 1400+ character lines — the exact spot where the main agent's
+ * copy slipped a character (PR 19291 incident, `"maxLength":80",`).
+ * Multi-line keeps every line short enough to copy reliably.
+ */
+export function serializeSchemaAsObjectLiteral(schema: JsonSchema, indent = "  "): string {
+	const json = JSON.stringify(schema, null, 2);
+	// Indent every line so the literal sits cleanly inside the script body.
+	return json
+		.split("\n")
+		.map((line, i) => (i === 0 ? line : indent + line))
+		.join("\n");
+}

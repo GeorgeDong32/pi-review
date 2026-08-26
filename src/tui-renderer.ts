@@ -46,6 +46,17 @@ export function registerPiReviewRenderer(pi: ExtensionAPI): void {
 					}
 					return parts.join("\n");
 				})();
+		// The `/review` command echo shares this customType with reports.
+		// Rendering it through the report path collapsed the user's own
+		// command into a meaningless "pi-review · COMMENT" line (the header
+		// extractor falls back to "comment" when no verdict is present).
+		// Echoes must pass through verbatim.
+		if (contentText.startsWith("/review")) {
+			const echo = theme.fg("toolTitle", "[pi-review] ") + contentText;
+			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
+			box.addChild(new Text(echo, 0, 0));
+			return box;
+		}
 		const header = extractHeader(contentText);
 		const label = header.verdict.toUpperCase();
 		const counts = header.totals

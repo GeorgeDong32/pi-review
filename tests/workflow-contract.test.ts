@@ -122,7 +122,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		// The reviewer array must be bound to a local before the return
 		// object — the gate IIFE and `reviewersShaped` reference it (a bare
 		// object property would throw `reviewers is not defined`).
-		assert.match(script, /^const reviewers = await runs\.all\(\[/);
+		assert.match(script, /^const REVIEWER_SCHEMA = \{[\s\S]*?\};\n\nconst reviewers = await runs\.all\(\[/);
 		assert.match(script, /return \{\n  reviewers,/);
 		const runsAll = (script.match(/runs\.all\(\[/g) ?? []).length;
 		assert.equal(runsAll, 1, "workflowScript must invoke runs.all once");
@@ -140,7 +140,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.match(d, /timeoutMs: \d+/);
 		// v0.7.2: the script is presented as an unescaped template literal
 		// (the double-escaped JSON string form broke the main agent's copy).
-		assert.match(d, /workflowScript: `\nconst reviewers = await runs\.all\(\[/);
+		assert.match(d, /workflowScript: `\nconst REVIEWER_SCHEMA = \{/);
 	});
 
 	test("P0: the generated workflowScript parses as valid JS (unquoted-path regression)", () => {
@@ -238,8 +238,13 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		const script = scriptOf(d);
 		const allBlock = runsAllOf(script);
 		const gateBlock = gateBlockOf(script);
-		assert.match(allBlock, /outputSchema: \{/);
-		assert.match(gateBlock, /outputSchema: \{/);
+		assert.match(allBlock, /outputSchema: REVIEWER_SCHEMA/);
+		assert.match(gateBlock, /outputSchema: GATE_SCHEMA/);
+		// Schemas are shared consts declared once — never inlined per child
+		// (inline form made 1400-char lines that broke the main agent's copy).
+		assert.equal((script.match(/outputSchema:/g) ?? []).length, defaultReviewers().length + 1);
+		const constDecls = (script.match(/const (REVIEWER|GATE)_SCHEMA/g) ?? []).length;
+		assert.equal(constDecls, 2, "each schema declared exactly once");
 		assert.doesNotMatch(allBlock, /JSON\.parse\(result\.output/);
 	});
 
@@ -368,12 +373,15 @@ describe("pi-subagents ≥0.55 read-only task classification", () => {
 		return false;
 	}
 
-	/** Extract every `task: "..."` JSON string literal from the script. */
+	/** Extract every task text from the script (v0.7.3 array-join form). */
 	function taskLiteralsOf(script: string): string[] {
 		const out: string[] = [];
-		const re = /(?:task: |const gateTask = )("(?:\\.|[^"\\])*")/g;
+		const re = /(?:task: |const gateTask = )\[\n((?:\s*"(?:\\.|[^"\\])*",?\n)+)\s*\]\.join\(" "\)/g;
 		let m: RegExpExecArray | null;
-		while ((m = re.exec(script)) !== null) out.push(JSON.parse(m[1]!));
+		while ((m = re.exec(script)) !== null) {
+			const parts = [...m[1]!.matchAll(/"((?:\\.|[^"\\])*)",?\n/g)].map((p) => JSON.parse(`"${p[1]}"`));
+			out.push(parts.join(" "));
+		}
 		return out;
 	}
 

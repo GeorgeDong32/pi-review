@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.3] - 2026-08-26
+
+Hotfix for the PR 19291 incident (first run of v0.7.2): the main agent
+followed the new workflow.js copy procedure exactly — read the file, copied
+it verbatim, retried once per the hard rules, then stopped and notified as
+instructed — and the review STILL died twice with "workflowScript must be
+valid JavaScript". Byte-diffing the sent script against workflow.js showed
+the copy had slipped a single character inside a 1400-char single-line
+schema (`"maxLength":80,"description"` → `"maxLength":80",`).
+
+### Fixed
+- **The generated workflowScript no longer contains any long single lines —
+  the actual root cause of every copy failure so far.** LLMs cannot
+  byte-reliably copy a 21 KB blob, and the fragile spots were the huge
+  lines, so the script now:
+  - declares `REVIEWER_SCHEMA` / `GATE_SCHEMA` **once** as shared consts
+    (was: the full schema inlined per child — 6 copies, ~10 KB of the
+    script, in 1400-char lines); children reference `outputSchema:
+    REVIEWER_SCHEMA`;
+  - emits reviewer and gate **task text as short quoted arrays joined at
+    runtime** (`task: ["…", "…"].join(" ")`) instead of one 900-char
+    JSON.stringify line;
+  - serializes schemas multi-line.
+  Net effect: script 21.4 KB → 17.3 KB, **longest line 1469 → 342 chars**.
+  Verified end-to-end: directive == workflow.js, parses, executes, and all
+  six task texts still classify read-only under the real installed
+  pi-subagents classifier.
+- **`/review` command echo no longer collapsed into "pi-review · COMMENT".**
+  The echo message shares the report's `pi-review` custom type, so the
+  report renderer folded the user's own command away (the header extractor
+  falls back to "comment" when no verdict is present). Echoes starting with
+  `/review` now render verbatim as `[pi-review] /review …`.
+
+[0.7.3]: https://github.com/GeorgeDong32/pi-review/compare/v0.7.2...v0.7.3
+
 ## [0.7.2] - 2026-08-25
 
 Hotfix for the PR 19395 incident (2026-08-25, first run of v0.7.1): the

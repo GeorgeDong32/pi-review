@@ -26,7 +26,7 @@ import {
 	withThinkingSuffix,
 	type LeanBudgetSpec,
 } from "./lean-agents.js";
-import { GATE_OUTPUT_SCHEMA, REVIEWER_OUTPUT_SCHEMA, serializeSchemaForJs } from "./workflow-schemas.js";
+import { GATE_OUTPUT_SCHEMA, REVIEWER_OUTPUT_SCHEMA, serializeSchemaAsObjectLiteral } from "./workflow-schemas.js";
 import type { ReviewerSpec, ReviewTarget } from "./types.js";
 
 export interface ReviewDirectiveInput {
@@ -286,8 +286,8 @@ export function buildWorkflowScript(input: {
 	} = input;
 	const gateOn = !lite && gateEnabled;
 
-	const reviewerSchemaLiteral = serializeSchemaForJs(REVIEWER_OUTPUT_SCHEMA);
-	const gateSchemaLiteral = serializeSchemaForJs(GATE_OUTPUT_SCHEMA);
+	const reviewerSchemaLiteral = serializeSchemaAsObjectLiteral(REVIEWER_OUTPUT_SCHEMA);
+	const gateSchemaLiteral = serializeSchemaAsObjectLiteral(GATE_OUTPUT_SCHEMA);
 
 	// Blanket read-only declaration. pi-subagents classifies each task text for
 	// mutation intent: with a generic-object prohibition ("do not write any
@@ -299,6 +299,16 @@ export function buildWorkflowScript(input: {
 		"READ-ONLY task — review only. Do not write any files. Do not edit files. Return findings only.";
 
 	const lines: string[] = [];
+	// Schemas are declared ONCE as shared consts (v0.7.3). Inlining the full
+	// schema per child made the script 21 KB with 1400-char lines — the main
+	// agent's verbatim copy slipped a single character there and the whole
+	// review died with "workflowScript must be valid JavaScript" (PR 19291).
+	// Shared consts cut the script to ~1/3 and keep every line short.
+	lines.push("const REVIEWER_SCHEMA = " + reviewerSchemaLiteral + ";");
+	if (!lite) {
+		lines.push("const GATE_SCHEMA = " + gateSchemaLiteral + ";");
+	}
+	lines.push("");
 	// Bind the reviewer array to a local FIRST: the gate IIFE and
 	// `reviewersShaped` below both reference `reviewers`, and a bare object
 	// property (`return { reviewers: ... }`) does NOT create a variable
@@ -340,7 +350,6 @@ export function buildWorkflowScript(input: {
 		if (userContext?.trim()) {
 			taskParts.push(`User request: ${userContext.trim()}`);
 		}
-		const taskLiteral = JSON.stringify(taskParts.join(" "));
 
 		const modelClause =
 			r.model && r.model !== "inherit"
@@ -349,7 +358,14 @@ export function buildWorkflowScript(input: {
 		lines.push("    {");
 		lines.push(`      key: ${JSON.stringify(r.id)},`);
 		lines.push(`      agent: ${JSON.stringify(leanAgentName(r.id))},`);
-		lines.push(`      task: ${taskLiteral},`);
+		// Task as an array joined at runtime — one short quoted line per
+		// instruction. A single JSON.stringify of the whole task produced
+		// 900+ char lines, the other fragile copy point.
+		lines.push(`      task: [`);
+		for (const part of taskParts) {
+			lines.push(`        ${JSON.stringify(part)},`);
+		}
+		lines.push(`      ].join(" "),`);
 		lines.push(`      cwd: ${JSON.stringify(workspacePath)},`);
 		if (r.thinking) {
 			lines.push(`      thinking: ${JSON.stringify(r.thinking)},`);
@@ -358,7 +374,7 @@ export function buildWorkflowScript(input: {
 		lines.push(
 			`      turnBudget: { maxTurns: ${budgets.turnBudget.maxTurns}, graceTurns: ${budgets.turnBudget.graceTurns} },${modelClause}`,
 		);
-		lines.push(`      outputSchema: ${reviewerSchemaLiteral},`);
+		lines.push(`      outputSchema: REVIEWER_SCHEMA,`);
 		lines.push("    },");
 	}
 	lines.push("]);");
@@ -368,7 +384,7 @@ export function buildWorkflowScript(input: {
 
 	// ---- gate ----------------------------------------------------------
 	if (gateOn) {
-		const gateTask = [
+		const gateTaskParts = [
 			READ_ONLY_PREFIX,
 			`Synthesize reviewer findings for ${targetLabel}.`,
 			`The full diff is at ${JSON.stringify(diffPath)} and your cwd is the target workspace — you CAN and SHOULD verify candidates yourself.`,
@@ -384,8 +400,7 @@ export function buildWorkflowScript(input: {
 			`The parent re-applies verdict in code; this is a recommendation.`,
 			`Skip false positives: ${FALSE_POSITIVE_GUIDANCE}.`,
 			`Output structuredOutput matching GATE_SCHEMA (verdict, issues[], dispositions[], reason).`,
-		].join(" ");
-		const gateTaskLiteral = JSON.stringify(gateTask);
+		];
 
 		lines.push("  gate: await (async () => {");
 		// Inline the reviewer structuredOutput objects into the gate task.
@@ -400,7 +415,13 @@ export function buildWorkflowScript(input: {
 		lines.push("      issues: r.ok && r.structuredOutput && Array.isArray(r.structuredOutput.issues) ? r.structuredOutput.issues : [],");
 		lines.push("      coverage: r.ok && r.structuredOutput && r.structuredOutput.coverage ? r.structuredOutput.coverage : { filesChecked: [], commandsRun: [], limitations: [r.ok ? 'no structuredOutput' : 'reviewer failed'] },");
 		lines.push("    }));");
-		lines.push("    const gateTask = " + gateTaskLiteral + " + '\\n\\n## Reviewer findings (structuredOutput)\\n' + JSON.stringify(reviewerInputs);");
+		// Gate task as an array join (short lines) — same copy-safety rule as
+		// the reviewer tasks above.
+		lines.push("    const gateTask = [");
+		for (const part of gateTaskParts) {
+			lines.push(`      ${JSON.stringify(part)},`);
+		}
+		lines.push(`    ].join(" ") + '\\n\\n## Reviewer findings (structuredOutput)\\n' + JSON.stringify(reviewerInputs);`);
 		lines.push("    const result = await runs.run('gate', {");
 		lines.push(`      agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
 		lines.push("      task: gateTask,");
@@ -408,7 +429,7 @@ export function buildWorkflowScript(input: {
 		lines.push(`      model: ${JSON.stringify(gateModelWithThinking)},`);
 		lines.push(`      toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
 		lines.push(`      turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
-		lines.push(`      outputSchema: ${gateSchemaLiteral},`);
+		lines.push(`      outputSchema: GATE_SCHEMA,`);
 		lines.push("    });");
 		lines.push("    return {");
 		lines.push("      ok: result.ok,");
