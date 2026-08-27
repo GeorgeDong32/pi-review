@@ -157,7 +157,16 @@ export function runReportTool(input: ReportToolInput): ReportToolResult {
 		ok: r.ok,
 		error: r.error,
 		output: r.output,
-		structuredOutput: r.ok ? r.structuredOutput ?? safeJsonParse(r.output) : undefined,
+		// A reviewer that hit its tool budget and finished with prose instead
+		// of the structured_output call is marked failed upstream — but its
+		// final text sometimes already contains the full JSON object. Salvage
+		// that instead of dropping every finding (observed: bugbot wrapped up
+		// with "Let me compile findings" and the JSON never made it out).
+		structuredOutput: r.ok
+			? r.structuredOutput ?? safeJsonParse(r.output)
+			: missingStructuredOutput(r.error)
+				? safeJsonParse(r.output)
+				: undefined,
 	}));
 
 	const gateRaw = (ret.gate ?? null) as {
@@ -314,8 +323,24 @@ function safeJsonParse(text?: string): unknown {
 	try {
 		return JSON.parse(text);
 	} catch {
+		// The model often wraps the JSON in prose or a fence — try to lift the
+		// outermost {...} block out before giving up.
+		const start = text.indexOf("{");
+		const end = text.lastIndexOf("}");
+		if (start >= 0 && end > start) {
+			try {
+				const lifted = JSON.parse(text.slice(start, end + 1));
+				if (lifted && typeof lifted === "object") return lifted;
+			} catch {
+				/* not JSON after all */
+			}
+		}
 		return undefined;
 	}
+}
+
+function missingStructuredOutput(error?: string): boolean {
+	return typeof error === "string" && error.includes("Missing structured_output call");
 }
 
 function loadManifestSafe(runId: string, cwd?: string): RunManifest | null {

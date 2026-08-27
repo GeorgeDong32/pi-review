@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.5] - 2026-08-27
+
+Hotfix for the first v0.7.4 field run: the workflowScript finally executed —
+reviewers really ran (bugbot: 3m56s, 20 tool uses) — but steps ended with
+`Error: Missing structured_output call; this step has outputSchema and must
+finish by calling structured_output`, and bugbot's output file contained
+only "I have enough context to finalize the review. Let me compile
+findings." — the JSON never made it out.
+
+### Fixed
+- **Mandatory finish rule in every bundled agent prompt.** The old wording
+  ("Return this JSON as your final reply. If the `structured_output` tool
+  is available, call it once instead") let models choose a plain-text
+  finish — fatal once the soft tool budget nudged a wrap-up. All 8 agents
+  now carry a FINISH RULE block: the final action MUST be a single
+  `structured_output` call (the only accepted finish; a plain-text reply
+  FAILS the step), keep one tool call in reserve, and when the budget
+  nudges, stop exploring and call it immediately.
+- **Salvage path for prose finishes:** when a step fails with "Missing
+  structured_output call" but its output text contains the JSON object
+  (often wrapped in prose or a fence), `pi_review_report` now lifts the
+  outermost `{…}` block and reports the reviewer as `limited` with its
+  findings intact, instead of `failed` with everything dropped. Truly
+  empty outputs still report `failed`, and a run whose reviewers are all
+  salvaged can no longer be misreported as `error` (all-limited →
+  `partial`).
+
+[0.7.5]: https://github.com/GeorgeDong32/pi-review/compare/v0.7.4...v0.7.5
+
 ## [0.7.4] - 2026-08-27
 
 Hotfix for the 2026-08-26 16:14 session: with v0.7.3's short-line script the

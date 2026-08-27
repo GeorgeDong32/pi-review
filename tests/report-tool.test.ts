@@ -69,6 +69,61 @@ describe("runReportTool", () => {
 		assert.equal(res.ok, true);
 	});
 
+	test("prose-wrap finish (Missing structured_output) with JSON in text is salvaged as limited", () => {
+		// Field failure (2026-08-27): bugbot's step was failed upstream after
+		// a prose finish, but its output text contained the full JSON object.
+		const { cwd, runId } = setupManifest();
+		const res = runReportTool({
+			runId,
+			cwd,
+			threshold: 8,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "bugbot",
+						ok: false,
+						error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.",
+						output: `Here are my findings:\n\n${JSON.stringify({
+							status: "ok",
+							issues: [{ ...MAJOR_ISSUE, confidence: 9 }],
+							summary: "salvaged",
+							coverage: { filesChecked: ["a.ts"], commandsRun: [], limitations: [] },
+						})}\n`,
+					},
+				],
+				gate: null,
+			},
+		});
+		assert.equal(res.ok, true);
+		if (!res.ok) return;
+		const row = res.report.reviewerStatus.find((s) => s.id === "bugbot");
+		assert.equal(row?.status, "limited", "salvaged reviewer reports limited, not failed");
+		assert.equal(res.report.totals.bySeverity.major, 1, "salvaged major survives into totals");
+	});
+
+	test("prose finish with NO JSON anywhere stays failed", () => {
+		const { cwd, runId } = setupManifest();
+		const res = runReportTool({
+			runId,
+			cwd,
+			workflowReturn: {
+				reviewers: [
+					{
+						key: "bugbot",
+						ok: false,
+						error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.",
+						output: "I have enough context to finalize the review. Let me compile findings.",
+					},
+				],
+				gate: null,
+			},
+		});
+		assert.equal(res.ok, true);
+		if (!res.ok) return;
+		const row = res.report.reviewerStatus.find((s) => s.id === "bugbot");
+		assert.equal(row?.status, "failed");
+	});
+
 	test("findings from non-roster reviewer keys are dropped and surfaced (stale-artifact guard)", () => {
 		const { cwd, runId, manifest } = setupManifest();
 		// Simulate the 2026-08-24 incident shape: a workflowReturn assembled

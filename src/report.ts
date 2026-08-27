@@ -41,12 +41,18 @@ export function coerceReviewerOutput(r: ReviewerWorkflowResult): {
 	coverage: { filesChecked: string[]; commandsRun: string[]; limitations: string[] };
 } {
 	if (!r.ok) {
-		return {
-			status: "failed",
-			issues: [],
-			summary: r.error ?? "reviewer failed",
-			coverage: { filesChecked: [], commandsRun: [], limitations: [r.error ?? "reviewer failed"] },
-		};
+		// A salvaged structuredOutput (report-tool lifts the JSON out of a
+		// prose finish after "Missing structured_output call") keeps the
+		// reviewer's findings alive — reported as limited, not failed.
+		const so = r.structuredOutput;
+		if (!so || typeof so !== "object") {
+			return {
+				status: "failed",
+				issues: [],
+				summary: r.error ?? "reviewer failed",
+				coverage: { filesChecked: [], commandsRun: [], limitations: [r.error ?? "reviewer failed"] },
+			};
+		}
 	}
 	const so = r.structuredOutput;
 	if (!so || typeof so !== "object") {
@@ -67,7 +73,9 @@ export function coerceReviewerOutput(r: ReviewerWorkflowResult): {
 		? obj.status
 		: "limited";
 	return {
-		status,
+		// Salvaged runs may claim ok, but the step did fail its finish
+		// contract — surface that honestly as limited.
+		status: r.ok ? status : status === "skipped" ? "skipped" : "limited",
 		issues: Array.isArray(obj.issues) ? obj.issues : [],
 		summary: typeof obj.summary === "string" ? obj.summary : "",
 		coverage: {
@@ -158,7 +166,7 @@ export function reportVerdict(
 	gate: { ok: boolean; structuredOutput?: unknown; error?: string } | null | undefined,
 	enforcedVerdict?: Verdict,
 ): Verdict | "no-gate" | "error" | "partial" {
-	if (reviewers.length > 0 && reviewers.every((r) => !r.ok)) return "error";
+	if (reviewers.length > 0 && reviewers.every((r) => coerceReviewerOutput(r).status === "failed")) return "error";
 	if (!gate || !gate.ok) return "no-gate";
 	const so = gate.structuredOutput as { status?: string } | null;
 	if (so?.status && so.status !== "ok") return "partial";

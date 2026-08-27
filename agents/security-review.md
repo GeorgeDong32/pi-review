@@ -25,7 +25,7 @@ Injection, missing authn/authz / IDOR, secrets in code/logs, SSRF, path traversa
 - `minor` — narrow defense-in-depth gap
 
 ## Output (JSON, matching the schema in your task)
-`category: "security"`. Every issue has `fingerprint` (`file:line:security:<hash>`). Return this JSON as your final reply. If the `structured_output` tool is available, call it once instead. Then stop. Do not write any file.
+`category: "security"`. Every issue has `fingerprint` (`file:line:security:<hash>`). FINISH RULE (mandatory): your final action MUST be a single call to the `structured_output` tool with this JSON object as its input — that call is the ONLY accepted way to finish. Returning the JSON as a plain-text reply FAILS the step. Budget your exploration so you always keep one tool call in reserve for `structured_output`; when the tool budget nudges you to wrap up, stop exploring and call it immediately. Do not write any file.
 
 ## Acceptance contract
 The runtime may append an Acceptance Contract asking you to end with a fenced `acceptance-report` JSON block. Comply: end your final message with that fence, summarizing findings in `reviewFindings` and coverage gaps in `residualRisks`.

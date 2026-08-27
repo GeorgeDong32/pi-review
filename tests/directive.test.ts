@@ -193,4 +193,25 @@ describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", ()
 		assert.match(body, /never score a candidate above 8 without your own verification evidence/i);
 		assert.doesNotMatch(body, /You do \*\*not\*\* have the full diff/);
 	});
+
+	test("every agent pins the mandatory structured_output finish rule", () => {
+		// Field failure (2026-08-27): bugbot hit its soft tool budget, wrapped
+		// up with a prose line, and upstream failed the step with "Missing
+		// structured_output call" — findings lost. The weak "if available,
+		// call it instead" wording let models choose a plain-text finish.
+		for (const name of [
+			"gate",
+			"lite-review",
+			"bugbot",
+			"security-review",
+			"conventions",
+			"code-comments",
+			"claude-md-compliance",
+			"history-context",
+		]) {
+			const body = readFileSync(join(agentsDir, `${name}.md`), "utf-8");
+			assert.match(body, /FINISH RULE \(mandatory\)/, `${name}.md must carry the mandatory finish rule`);
+			assert.match(body, /final action MUST be a single call to the `structured_output` tool/, `${name}.md finish rule wording`);
+		}
+	});
 });
