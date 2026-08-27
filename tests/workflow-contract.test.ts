@@ -130,6 +130,12 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.equal(runsAll, 1, "workflowScript must invoke runs.all once");
 		const runsRunGate = (script.match(/runs\.run\('gate'/g) ?? []).length;
 		assert.equal(runsRunGate, 1, "workflowScript must invoke runs.run('gate') once");
+		// v0.8.1: proxy providers report bare model ids that fail upstream's
+		// strict model verification — the gate launch is wrapped in try/catch
+		// with a one-shot inherit-model retry under a different key.
+		assert.equal((script.match(/runs\.run\('gate-fallback'/g) ?? []).length, 1, "one fallback launch");
+		assert.match(script, /try \{\n  gateRun = await runs\.run\('gate'/);
+		assert.match(script, /\} catch \(gateLaunchError\) \{\n  gateRun = await runs\.run\('gate-fallback'/);
 		assert.doesNotMatch(script, /runs\.run\('claude-md-compliance'/);
 		assert.doesNotMatch(script, /runs\.run\('bugbot'/);
 		assert.doesNotMatch(script, /runs\.run\('security-review'/);
@@ -231,8 +237,8 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		);
 		const script = scriptOf(d);
 		const cwdOccurrences = script.split(`cwd: ${JSON.stringify(WORKSPACE)}`).length - 1;
-		// One cwd per reviewer + one for the gate child.
-		assert.equal(cwdOccurrences, reviewers.length + 1, "every reviewer + gate child must set cwd to the target workspace");
+		// One cwd per reviewer + two for the gate (primary + inherit fallback).
+		assert.equal(cwdOccurrences, reviewers.length + 2, "every reviewer + gate launches must set cwd to the target workspace");
 	});
 
 	test("v0.8: NO child declares outputSchema (Markdown-first contract)", () => {
@@ -416,8 +422,9 @@ describe("pi-subagents ≥0.55 read-only task classification", () => {
 		const d = buildReviewDirective(baseInput());
 		const script = scriptOf(d);
 		assert.doesNotMatch(script, /\basync\b/, "workflowScript must not contain any async functions");
-		// And the gate launch is a top-level statement.
-		assert.match(script, /^const gateRun = await runs\.run\('gate', \{$/m);
+		// And the gate launch is top-level (wrapped in a try/catch with a
+		// one-shot fallback since v0.8.1).
+		assert.match(script, /^let gateRun;$/m);
 		assert.doesNotMatch(script, /gate: await/);
 	});
 });

@@ -410,14 +410,32 @@ export function buildWorkflowScript(input: {
 			lines.push(`  ${JSON.stringify(part)},`);
 		}
 		lines.push(`].join(" ") + '\\n\\n# Reviewer reports (Markdown)\\n\\n' + reviewerSections.join('\\n\\n---\\n\\n');`);
-		lines.push("const gateRun = await runs.run('gate', {");
-		lines.push(`  agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
-		lines.push("  task: gateTask,");
-		lines.push(`  cwd: ${JSON.stringify(workspacePath)},`);
-		lines.push(`  model: ${JSON.stringify(gateModelWithThinking)},`);
-		lines.push(`  toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
-		lines.push(`  turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
-		lines.push("});");
+		// Proxy providers often report bare model ids from the child ("MiniMax-M2.7")
+		// that fail the launcher's strict model verification against the launch
+		// candidate ("CPA/Minimax/MiniMax-M2.7:high") — observed 2026-08-27. The
+		// reviewers never hit this (they inherit). So: try the configured model
+		// first; on launch failure retry once with an inherited model under a
+		// DIFFERENT key (the runtime rejects same-key launches with different
+		// params). A second failure rejects as before.
+		lines.push("let gateRun;");
+		lines.push("try {");
+		lines.push("  gateRun = await runs.run('gate', {");
+		lines.push(`    agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
+		lines.push("    task: gateTask,");
+		lines.push(`    cwd: ${JSON.stringify(workspacePath)},`);
+		lines.push(`    model: ${JSON.stringify(gateModelWithThinking)},`);
+		lines.push(`    toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
+		lines.push(`    turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
+		lines.push("  });");
+		lines.push("} catch (gateLaunchError) {");
+		lines.push("  gateRun = await runs.run('gate-fallback', {");
+		lines.push(`    agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
+		lines.push("    task: gateTask,");
+		lines.push(`    cwd: ${JSON.stringify(workspacePath)},`);
+		lines.push(`    toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
+		lines.push(`    turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
+		lines.push("  });");
+		lines.push("}");
 		lines.push("const gate = {");
 		lines.push("  ok: gateRun.ok,");
 		lines.push("  error: gateRun.error,");

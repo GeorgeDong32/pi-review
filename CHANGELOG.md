@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-08-27
+
+### Fixed
+- **Gate no longer dies on proxy providers' model verification.** First
+  v0.8.0 field run: reviewers all completed, then the gate was rejected with
+  `model_verification_failed: child reported a different model than the
+  launch candidate. Expected 'CPA/Minimax/MiniMax-M2.7:high' but observed
+  'MiniMax-M2.7'` — proxy providers report the bare upstream model id,
+  which never matches the registered `provider/id` form. The gate launch is
+  now wrapped in try/catch with a one-shot retry under the `gate-fallback`
+  key that inherits the parent session model (the same path the reviewers
+  use, which is why they never hit this). A second failure rejects as
+  before; the configured model is still preferred when it works.
+  (Different key because the runtime rejects same-key launches with
+  different params.)
+
+[0.8.1]: https://github.com/GeorgeDong32/pi-review/compare/v0.8.0...v0.8.1
+
 ## [0.8.0] - 2026-08-27
 
 ### Changed — Markdown-first output contract (user decision)
