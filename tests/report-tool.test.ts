@@ -58,6 +58,16 @@ const MAJOR_ISSUE = {
 	fingerprint: "a.ts:4:bug:null",
 };
 
+
+const gateMd = (block: Record<string, unknown>, synthesis = "gate synthesis") =>
+	`${synthesis}\n\n\`\`\`json\n${JSON.stringify(block, null, 1)}\n\`\`\`\n`;
+
+const okReviewer = (key: string, md = "## Summary\nok\n\n## Findings\nNo findings.") => ({
+	key,
+	ok: true,
+	output: md,
+});
+
 describe("runReportTool", () => {
 	test("finds the manifest via explicit cwd (not process.cwd)", () => {
 		const { cwd, runId } = setupManifest();
@@ -69,65 +79,50 @@ describe("runReportTool", () => {
 		assert.equal(res.ok, true);
 	});
 
-	test("prose-wrap finish (Missing structured_output) with JSON in text is salvaged as limited", () => {
-		// Field failure (2026-08-27): bugbot's step was failed upstream after
-		// a prose finish, but its output text contained the full JSON object.
+	test("v0.8: verdict comes from the gate's fenced JSON block; reviewer MD renders verbatim", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({
 			runId,
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: false,
-						error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.",
-						output: `Here are my findings:\n\n${JSON.stringify({
-							status: "ok",
-							issues: [{ ...MAJOR_ISSUE, confidence: 9 }],
-							summary: "salvaged",
-							coverage: { filesChecked: ["a.ts"], commandsRun: [], limitations: [] },
-						})}\n`,
-					},
-				],
-				gate: null,
+				reviewers: [okReviewer("bugbot", "## Summary\nChecked the diff.\n\n## Findings\nNo findings.")],
+				gate: {
+					ok: true,
+					output: gateMd({
+						status: "ok",
+						verdict: "approve",
+						reason: "clean",
+						issues: [],
+						dispositions: [],
+					}),
+				},
 			},
 		});
 		assert.equal(res.ok, true);
 		if (!res.ok) return;
-		const row = res.report.reviewerStatus.find((s) => s.id === "bugbot");
-		assert.equal(row?.status, "limited", "salvaged reviewer reports limited, not failed");
-		assert.equal(res.report.totals.bySeverity.major, 1, "salvaged major survives into totals");
+		assert.equal(res.verdict, "approve");
+		assert.match(res.markdown, /Checked the diff\./);
 	});
 
-	test("prose finish with NO JSON anywhere stays failed", () => {
+	test("gate Markdown WITHOUT a fenced JSON block reports no-gate", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({
 			runId,
 			cwd,
+			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: false,
-						error: "Missing structured_output call; this step has outputSchema and must finish by calling structured_output.",
-						output: "I have enough context to finalize the review. Let me compile findings.",
-					},
-				],
-				gate: null,
+				reviewers: [okReviewer("bugbot")],
+				gate: { ok: true, output: "## Synthesis\nI forgot the JSON block." },
 			},
 		});
 		assert.equal(res.ok, true);
 		if (!res.ok) return;
-		const row = res.report.reviewerStatus.find((s) => s.id === "bugbot");
-		assert.equal(row?.status, "failed");
+		assert.equal(res.verdict, "no-gate");
 	});
 
-	test("findings from non-roster reviewer keys are dropped and surfaced (stale-artifact guard)", () => {
+	test("non-roster reviewer keys are dropped and surfaced (stale-artifact guard)", () => {
 		const { cwd, runId, manifest } = setupManifest();
-		// Simulate the 2026-08-24 incident shape: a workflowReturn assembled
-		// from OLD artifacts carries reviewer keys this run never launched.
 		writeManifest(join(cwd, ".pi", "pi-review", "runs", runId), {
 			...manifest,
 			reviewerIds: ["bugbot"],
@@ -137,46 +132,23 @@ describe("runReportTool", () => {
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [],
-							summary: "",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-					{
-						key: "history-context",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [MAJOR_ISSUE],
-							summary: "from an old run",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-				],
+				reviewers: [okReviewer("bugbot"), okReviewer("history-context", "## Summary\nfrom an old run\n\n## Findings\n- [MAJOR|history|9] `a.ts:4` — stale")],
 				gate: {
 					ok: true,
-					structuredOutput: {
+					output: gateMd({
 						status: "ok",
-						verdict: "request_changes",
-						issues: [{ ...MAJOR_ISSUE, confidence: 9 }],
+						verdict: "comment",
+						reason: "ok",
+						issues: [],
 						dispositions: [],
-						reason: "old artifacts",
-						coverage: { limitations: [] },
-					},
+					}),
 				},
 			},
 		});
 		assert.equal(res.ok, true);
 		if (!res.ok) return;
-		// The stale reviewer's major must not survive into the report issues.
-		assert.equal(res.report.totals.bySeverity.major, 0);
 		assert.match(res.markdown, /non-roster reviewer keys: history-context/);
+		assert.doesNotMatch(res.markdown, /#### history-context — ok/, "stale reviewer MD must not render");
 	});
 
 	test("workflowReturn with ONLY non-roster keys is rejected outright (no fabricated approve)", () => {
@@ -189,18 +161,7 @@ describe("runReportTool", () => {
 			runId,
 			cwd,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "history-context", // stale artifact, not this run's roster
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [MAJOR_ISSUE],
-							summary: "old run",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-				],
+				reviewers: [okReviewer("history-context")],
 				gate: null,
 			},
 		});
@@ -211,7 +172,6 @@ describe("runReportTool", () => {
 
 	test("a successful report reclaims its cloned tmp workspace (end-of-run cleanup)", () => {
 		const { cwd, runId, manifest } = setupManifest();
-		// Simulate a plugin-owned scratch clone under the OS tmpdir.
 		const scratchRoot = mkdtempSync(join(tmpdir(), "pi-review-ws-"));
 		const cloneDir = join(scratchRoot, "some-repo-42");
 		mkdirSync(cloneDir, { recursive: true });
@@ -226,33 +186,11 @@ describe("runReportTool", () => {
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [],
-							summary: "clean",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-				],
-				gate: {
-					ok: true,
-					structuredOutput: {
-						status: "ok",
-						verdict: "approve",
-						issues: [],
-						dispositions: [],
-						reason: "clean",
-						coverage: { limitations: [] },
-					},
-				},
+				reviewers: [okReviewer("bugbot")],
+				gate: { ok: true, output: gateMd({ status: "ok", verdict: "approve", reason: "clean", issues: [], dispositions: [] }) },
 			},
 		});
 		assert.equal(res.ok, true);
-		// The whole scratch root (not just the clone dir) is gone.
 		assert.equal(existsSync(scratchRoot), false, "cloned workspace reclaimed after report");
 	});
 
@@ -260,36 +198,14 @@ describe("runReportTool", () => {
 		const { cwd, runId, manifest } = setupManifest();
 		writeManifest(join(cwd, ".pi", "pi-review", "runs", runId), {
 			...manifest,
-			// local-git run: workspace IS the user's repo, no cloned flag.
 			workspaceCloned: false,
 		});
 		const res = runReportTool({
 			runId,
 			cwd,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [],
-							summary: "",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-				],
-				gate: {
-					ok: true,
-					structuredOutput: {
-						status: "ok",
-						verdict: "approve",
-						issues: [],
-						dispositions: [],
-						reason: "",
-						coverage: { limitations: [] },
-					},
-				},
+				reviewers: [okReviewer("bugbot")],
+				gate: { ok: true, output: gateMd({ status: "ok", verdict: "approve", reason: "", issues: [], dispositions: [] }) },
 			},
 		});
 		assert.equal(res.ok, true);
@@ -303,23 +219,13 @@ describe("runReportTool", () => {
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [MAJOR_ISSUE],
-							summary: "1 major",
-							coverage: { filesChecked: ["a.ts"], commandsRun: [], limitations: [] },
-						},
-					},
-				],
+				reviewers: [okReviewer("bugbot", "## Summary\n1 major\n\n## Findings\n- [MAJOR|bug|7] `a.ts:4` — null deref")],
 				gate: {
 					ok: true,
-					structuredOutput: {
+					output: gateMd({
 						status: "ok",
 						verdict: "comment",
+						reason: "verified",
 						issues: [{ ...MAJOR_ISSUE, confidence: 8 }],
 						dispositions: [
 							{
@@ -330,10 +236,8 @@ describe("runReportTool", () => {
 								sourceReviewers: ["bugbot"],
 								reason: "verified against diff",
 							},
-						],
-						reason: "verified",
-						coverage: { limitations: [] },
-					},
+							],
+						}),
 				},
 			},
 		});
@@ -354,24 +258,14 @@ describe("runReportTool", () => {
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "history-context",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [MAJOR_ISSUE],
-							summary: "1 major",
-							coverage: { filesChecked: [], commandsRun: [], limitations: ["diff truncated"] },
-						},
-					},
-				],
+				reviewers: [okReviewer("history-context", "## Summary\n1 major (unverified)\n\n## Findings\n- [MAJOR|history|7] `a.ts:4` — area reworked twice")],
 				gate: {
 					ok: true,
-					structuredOutput: {
+					output: gateMd({
 						status: "ok",
 						verdict: "comment",
-						issues: [],
+						reason: "kept unverified",
+						issues: [{ ...MAJOR_ISSUE, confidence: 7 }],
 						dispositions: [
 							{
 								fingerprint: "a.ts:4:bug:null",
@@ -381,10 +275,8 @@ describe("runReportTool", () => {
 								sourceReviewers: ["history-context"],
 								reason: "unverified: diff truncated before the registration hunk; kept for human review",
 							},
-						],
-						reason: "kept unverified",
-						coverage: { limitations: [] },
-					},
+							],
+						}),
 				},
 			},
 		});
@@ -402,24 +294,14 @@ describe("runReportTool", () => {
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "code-comments",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [{ ...minor, confidence: 4 }],
-							summary: "1 minor",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-				],
+				reviewers: [okReviewer("code-comments")],
 				gate: {
 					ok: true,
-					structuredOutput: {
+					output: gateMd({
 						status: "ok",
 						verdict: "comment",
-						issues: [],
+						reason: "dropped",
+						issues: [{ ...minor, confidence: 4 }],
 						dispositions: [
 							{
 								fingerprint: "a.ts:4:bug:minor",
@@ -429,82 +311,60 @@ describe("runReportTool", () => {
 								sourceReviewers: ["code-comments"],
 								reason: "unverified: stylistic, below bar",
 							},
-						],
-						reason: "dropped",
-						coverage: { limitations: [] },
-					},
+							],
+						}),
 				},
 			},
 		});
 		assert.equal(res.ok, true);
 		if (!res.ok) return;
-		// Gate ok + no surviving issues → enforced approve… but gate status ok
-		// means the report verdict comes from enforcement: approve.
 		assert.equal(res.verdict, "approve");
 	});
 
-	test("without gate scores, a conf-7 major is dropped at threshold 8 and the report says no-gate (not approve)", () => {
+	test("no gate and no lite verdict block → report says no-gate (not approve)", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({
 			runId,
 			cwd,
 			threshold: 8,
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: [MAJOR_ISSUE],
-							summary: "1 major",
-							coverage: { filesChecked: ["a.ts"], commandsRun: [], limitations: [] },
-						},
-					},
-				],
+				reviewers: [okReviewer("bugbot", "## Summary\n1 major\n\n## Findings\n- [MAJOR|bug|7] `a.ts:4` — null deref")],
 				gate: null,
 			},
 		});
 		assert.equal(res.ok, true);
 		if (!res.ok) return;
-		// No gate ran: the tool reports no-gate instead of fabricating approve.
+		// No verdict source: the tool reports no-gate instead of fabricating approve.
 		assert.equal(res.verdict, "no-gate");
 	});
 
 	test("legacy verdict policy still applies when configured", () => {
 		const { cwd, runId } = setupManifest();
-		// 2 majors at conf 9 with legacy policy -> comment (needs >=3).
-		const twoMajors = [1, 2].map((n) => ({
+		const two = [1, 2].map((n) => ({
 			file: `a${n}.ts`,
 			line: 1,
 			category: "bug" as const,
 			severity: "major" as const,
 			confidence: 9,
 			evidence: "x",
-			fingerprint: `a${n}.ts:1:bug:x`,
+			fingerprint: `a${n}.ts:1:bug:x${n}`,
 		}));
 		const res = runReportTool({
 			runId,
 			cwd,
+			threshold: 8,
 			verdictPolicy: "legacy",
 			workflowReturn: {
-				reviewers: [
-					{
-						key: "bugbot",
-						ok: true,
-						structuredOutput: {
-							status: "ok",
-							issues: twoMajors,
-							summary: "2 majors",
-							coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-						},
-					},
-				],
-				gate: { ok: true, structuredOutput: { status: "ok", verdict: "comment", issues: twoMajors, dispositions: [], reason: "x", coverage: { limitations: [] } } },
+				reviewers: [okReviewer("bugbot")],
+				gate: {
+					ok: true,
+					output: gateMd({ status: "ok", verdict: "comment", reason: "two majors", issues: two, dispositions: [] }),
+				},
 			},
 		});
 		assert.equal(res.ok, true);
 		if (!res.ok) return;
+		// legacy: needs >=3 majors before request_changes; 2 majors -> comment
 		assert.equal(res.verdict, "comment");
 	});
 

@@ -81,23 +81,18 @@ describe("buildReportFromWorkflow", () => {
 		assert.equal(report.verdict, "request_changes");
 	});
 
-	test("all reviewers limited → partial, never a clean approve (coverage hole)", () => {
-		const limited = [
+	test("all reviewers skipped → never a clean approve (coverage hole)", () => {
+		const skipped = [
 			{
 				key: "bugbot",
 				ok: true,
-				structuredOutput: {
-					status: "limited",
-					issues: [],
-					summary: "partial",
-					coverage: { filesChecked: [], commandsRun: [], limitations: ["turn budget"] },
-				},
+				output: "## Summary\nSKIPPED: docs-only\n\n## Findings\nNo findings.\n\n## Coverage\n- Limitations: docs-only",
 			},
 		];
 		const report = buildReportFromWorkflow({
 			startedAt: 0,
 			manifest: MANIFEST,
-			workflowReturn: { reviewers: limited, gate: { ok: true, structuredOutput: { status: "ok" } } },
+			workflowReturn: { reviewers: skipped, gate: { ok: true, structuredOutput: { status: "ok" } } },
 			threshold: 8,
 			policy: "strict",
 			enforcedVerdict: "approve",
@@ -105,30 +100,20 @@ describe("buildReportFromWorkflow", () => {
 			enforcedDispositions: [],
 			enforcedReason: "no survivors",
 		});
-		assert.equal(report.verdict, "partial");
+		assert.equal(report.verdict, "comment");
 	});
 
-	test("one limited + one ok reviewer does not downgrade to partial", () => {
+	test("one skipped + one ok reviewer keeps the enforced verdict", () => {
 		const mixed = [
 			{
 				key: "bugbot",
 				ok: true,
-				structuredOutput: {
-					status: "limited",
-					issues: [],
-					summary: "",
-					coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-				},
+				output: "## Summary\nSKIPPED: docs-only\n\n## Findings\nNo findings.",
 			},
 			{
 				key: "security-review",
 				ok: true,
-				structuredOutput: {
-					status: "ok",
-					issues: [],
-					summary: "",
-					coverage: { filesChecked: [], commandsRun: [], limitations: [] },
-				},
+				output: "## Summary\nchecked\n\n## Findings\nNo findings.",
 			},
 		];
 		const report = buildReportFromWorkflow({

@@ -26,7 +26,6 @@ import {
 	withThinkingSuffix,
 	type LeanBudgetSpec,
 } from "./lean-agents.js";
-import { GATE_OUTPUT_SCHEMA, REVIEWER_OUTPUT_SCHEMA, serializeSchemaAsObjectLiteral } from "./workflow-schemas.js";
 import type { ReviewerSpec, ReviewTarget } from "./types.js";
 
 export interface ReviewDirectiveInput {
@@ -196,10 +195,10 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push("");
 	blocks.push(
 		lite
-			? "The script fans out the single lite-reviewer. Read `result.structuredOutput`; never parse free text."
+			? "The script fans out the single lite-reviewer, which returns a Markdown report ending in a fenced JSON block."
 			: gateOn
-				? "The script fans out the lean reviewers in parallel, then feeds their structuredOutput objects to the gate. The gate also returns structuredOutput; the script passes it back unchanged."
-				: "The script fans out the lean reviewers in parallel (gate disabled in config). Read `result.structuredOutput`; never parse free text.",
+				? "The script fans out the lean reviewers in parallel (Markdown reports), then feeds their reports to the gate, which returns a Markdown synthesis ending in a fenced JSON verdict block."
+				: "The script fans out the lean reviewers in parallel (gate disabled in config); each returns a Markdown report.",
 	);
 	blocks.push("");
 	blocks.push("```js");
@@ -225,7 +224,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	blocks.push("## Step 3 — Render the report (call `pi_review_report`)");
 	blocks.push("");
 	blocks.push(
-		"Call the `pi_review_report` tool **exactly once** with `{ runId, workflowReturn }`. The tool loads the manifest, re-validates each reviewer's structuredOutput, runs the deterministic verdict rules, and renders the final markdown + persists a session entry. Do not re-write findings yourself.",
+		"Call the `pi_review_report` tool **exactly once** with `{ runId, workflowReturn }`. The tool loads the manifest, extracts + validates the gate's fenced JSON verdict block, runs the deterministic verdict rules, and renders the final markdown + persists a session entry. Do not re-write findings yourself.",
 	);
 	blocks.push("");
 
@@ -286,9 +285,6 @@ export function buildWorkflowScript(input: {
 	} = input;
 	const gateOn = !lite && gateEnabled;
 
-	const reviewerSchemaLiteral = serializeSchemaAsObjectLiteral(REVIEWER_OUTPUT_SCHEMA);
-	const gateSchemaLiteral = serializeSchemaAsObjectLiteral(GATE_OUTPUT_SCHEMA);
-
 	// Blanket read-only declaration. pi-subagents classifies each task text for
 	// mutation intent: with a generic-object prohibition ("do not write any
 	// files") plus "review only"/"return findings only", the task is
@@ -299,15 +295,11 @@ export function buildWorkflowScript(input: {
 		"READ-ONLY task — review only. Do not write any files. Do not edit files. Return findings only.";
 
 	const lines: string[] = [];
-	// Schemas are declared ONCE as shared consts (v0.7.3). Inlining the full
-	// schema per child made the script 21 KB with 1400-char lines — the main
-	// agent's verbatim copy slipped a single character there and the whole
-	// review died with "workflowScript must be valid JavaScript" (PR 19291).
-	// Shared consts cut the script to ~1/3 and keep every line short.
-	lines.push("const REVIEWER_SCHEMA = " + reviewerSchemaLiteral + ";");
-	if (!lite) {
-		lines.push("const GATE_SCHEMA = " + gateSchemaLiteral + ";");
-	}
+	// v0.8: no outputSchema on any child — the structured-output tool
+	// contract was too fragile in the field ("Missing structured_output
+	// call" after budget wrap-ups). Reviewers return Markdown reports; the
+	// gate ends with a fenced JSON verdict block that the report tool
+	// extracts. See agents/*.md "Output format" sections.
 	lines.push("");
 	// Bind the reviewer array to a local FIRST: the gate IIFE and
 	// `reviewersShaped` below both reference `reviewers`, and a bare object
@@ -323,7 +315,7 @@ export function buildWorkflowScript(input: {
 			`Read ${JSON.stringify(diffPath)} as the change — the diff is the authoritative change record; workspace files are context only. When a workspace file disagrees with the diff, trust the diff and note the discrepancy in coverage.limitations.`,
 			`Also read ${JSON.stringify(manifestPath)} for change-profile (docsOnly, file list, rule file paths). Do not re-fetch via gh/git.`,
 			`Your cwd is the target workspace (${JSON.stringify(workspacePath)}). Run all read/grep/git from there.`,
-			"Stay within budgets; return your findings as structuredOutput matching the REVIEWER_SCHEMA and stop.",
+			"Stay within budgets; finish with your Markdown report (Summary / Findings / Coverage) as your final message and stop.",
 			"Do not read plan.md, progress.md, anything under .pi-subagents/ (artifacts and transcripts included), or node_modules.",
 			"Prefer Read/Grep. If you use bash, only simple allowlisted commands (no &&/||/; compounds).",
 		];
@@ -374,7 +366,6 @@ export function buildWorkflowScript(input: {
 		lines.push(
 			`      turnBudget: { maxTurns: ${budgets.turnBudget.maxTurns}, graceTurns: ${budgets.turnBudget.graceTurns} },${modelClause}`,
 		);
-		lines.push(`      outputSchema: REVIEWER_SCHEMA,`);
 		lines.push("    },");
 	}
 	lines.push("]);");
@@ -393,7 +384,7 @@ export function buildWorkflowScript(input: {
 			`Synthesize reviewer findings for ${targetLabel}.`,
 			`The full diff is at ${JSON.stringify(diffPath)} and your cwd is the target workspace — you CAN and SHOULD verify candidates yourself.`,
 			`Threshold ${threshold}: drop candidates with finalConfidence < ${threshold}.`,
-			`Inputs are reviewer structuredOutput objects (each has status, issues[].fingerprint, coverage).`,
+			`Inputs are the reviewers' Markdown reports (## Summary / ## Findings / ## Coverage sections, one per reviewer).`,
 			`Re-score every candidate 1–10. For each blocker/major candidate, first try to verify it by reading the diff hunk and the touched file in the workspace; state what you checked in the disposition reason.`,
 			`Never raise a candidate above 8 without your own verification evidence from the diff or workspace files.`,
 			`If you cannot verify a blocker/major candidate (missing context, truncated diff), do NOT silently drop it: keep it at the reviewer's original confidence, prefix the reason with "unverified:", and let the human decide — the parent's report tool floors unverified blocker/major candidates at the threshold so they stay visible.`,
@@ -403,26 +394,22 @@ export function buildWorkflowScript(input: {
 				: `Verdict (strict): request_changes if any surviving blocker or major; comment if only minor/nit; approve if no surviving issues.`,
 			`The parent re-applies verdict in code; this is a recommendation.`,
 			`Skip false positives: ${FALSE_POSITIVE_GUIDANCE}.`,
-			`Output structuredOutput matching GATE_SCHEMA (verdict, issues[], dispositions[], reason).`,
+			`End your report with exactly one fenced json block containing { status, verdict, issues[], dispositions[], reason } — the parent machine-reads that block.`,
 		];
 
-		// Build the gate's inlined reviewer findings from the captured list
-		// (sync arrow — allowed; only async functions are rejected).
-		lines.push("const reviewerInputs = reviewers.map((r) => ({");
-		lines.push("  key: r.key,");
-		lines.push("  ok: r.ok,");
-		lines.push("  error: r.error,");
-		lines.push("  status: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput.status : (r.ok ? 'limited' : 'failed'),");
-		lines.push("  issues: r.ok && r.structuredOutput && Array.isArray(r.structuredOutput.issues) ? r.structuredOutput.issues : [],");
-		lines.push("  coverage: r.ok && r.structuredOutput && r.structuredOutput.coverage ? r.structuredOutput.coverage : { filesChecked: [], commandsRun: [], limitations: [r.ok ? 'no structuredOutput' : 'reviewer failed'] },");
-		lines.push("}));");
+		// Inline the reviewers' Markdown reports for the gate to arbitrate.
+		// (Sync arrow — allowed; only async functions are rejected upstream.)
+		lines.push("const reviewerSections = reviewers.map((r) => {");
+		lines.push("  const head = '## Reviewer: ' + r.key + (r.ok ? '' : ' (FAILED: ' + String(r.error || 'run failed').slice(0, 120) + ')');");
+		lines.push("  return head + '\\n\\n' + String(r.output || '(no output)').slice(0, 6000);");
+		lines.push("});");
 		// Gate task as an array join (short lines) — same copy-safety rule as
 		// the reviewer tasks above.
 		lines.push("const gateTask = [");
 		for (const part of gateTaskParts) {
 			lines.push(`  ${JSON.stringify(part)},`);
 		}
-		lines.push(`].join(" ") + '\\n\\n## Reviewer findings (structuredOutput)\\n' + JSON.stringify(reviewerInputs);`);
+		lines.push(`].join(" ") + '\\n\\n# Reviewer reports (Markdown)\\n\\n' + reviewerSections.join('\\n\\n---\\n\\n');`);
 		lines.push("const gateRun = await runs.run('gate', {");
 		lines.push(`  agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
 		lines.push("  task: gateTask,");
@@ -430,13 +417,12 @@ export function buildWorkflowScript(input: {
 		lines.push(`  model: ${JSON.stringify(gateModelWithThinking)},`);
 		lines.push(`  toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
 		lines.push(`  turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
-		lines.push(`  outputSchema: GATE_SCHEMA,`);
 		lines.push("});");
 		lines.push("const gate = {");
 		lines.push("  ok: gateRun.ok,");
 		lines.push("  error: gateRun.error,");
 		lines.push("  output: gateRun.output,");
-		lines.push("  structuredOutput: gateRun.ok && gateRun.structuredOutput && typeof gateRun.structuredOutput === 'object' ? gateRun.structuredOutput : null,");
+		
 		lines.push("};");
 		lines.push("");
 	}
@@ -454,9 +440,7 @@ export function buildWorkflowScript(input: {
 	lines.push("    key: r.key,");
 	lines.push("    ok: r.ok,");
 	lines.push("    error: r.error,");
-	lines.push("    status: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput.status : (r.ok ? 'limited' : 'failed'),");
 	lines.push("    output: r.output,");
-	lines.push("    structuredOutput: r.ok && r.structuredOutput && typeof r.structuredOutput === 'object' ? r.structuredOutput : null,");
 	lines.push("  })),");
 	lines.push("};");
 	return lines.join("\n");

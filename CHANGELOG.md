@@ -4,6 +4,41 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-08-27
+
+### Changed — Markdown-first output contract (user decision)
+**Structured output is gone from the fan-out.** The `outputSchema` /
+`structured_output`-tool finish contract kept failing in the field (v0.7.5:
+"Missing structured_output call" after tool-budget wrap-ups; models chose
+plain-text finishes). v0.8 removes the contract instead of patching it:
+
+- **Reviewers (all 6 lanes) return Markdown reports** — Summary / Findings /
+  Coverage sections, findings as `- [SEVERITY|category|confidence]
+  \`file:line\` — evidence` bullets, `SKIPPED: <reason>` for non-applicable
+  lanes. Nothing to un-escape, nothing to fail.
+- **The gate (and the lite-reviewer) end their Markdown with exactly one
+  fenced ```json verdict block** ({ status, verdict, issues[],
+  dispositions[], reason }). That block is the only machine-read point;
+  `pi_review_report` extracts it (fenced-first, brace-lift fallback, last
+  well-shaped block wins) and re-applies the deterministic verdict rules on
+  its issues.
+- **The gate's inputs are the reviewers' Markdown reports** (inlined into
+  its task, FAILED reviewers annotated) — the gate reads them the way an
+  LLM reads best, re-scores, verifies blocker/majors against the diff +
+  workspace, and emits the verdict block.
+- The workflowScript shrinks again (~17 KB → ~9 KB full mode, 1.3 KB lite):
+  no schema constants, no per-child `outputSchema`. Verified against the
+  real installed pi-subagents 0.55.0 validator (PASS), the read-only task
+  classifier (all 6 tasks read-only with Markdown payloads), and an
+  end-to-end stub run including gate-Markdown → verdict-block extraction.
+- Report rendering: reviewer Markdown is rendered verbatim under the status
+  header; gate synthesis + surviving issues + dispositions follow. All
+  reviewers skipped can no longer produce a clean APPROVE (downgraded to
+  comment); a gate that ran but produced no parseable verdict block reports
+  `no-gate`.
+
+[0.8.0]: https://github.com/GeorgeDong32/pi-review/compare/v0.7.5...v0.8.0
+
 ## [0.7.5] - 2026-08-27
 
 Hotfix for the first v0.7.4 field run: the workflowScript finally executed —

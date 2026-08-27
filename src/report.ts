@@ -33,7 +33,7 @@ export interface WorkflowReturnValue {
 	gate?: { ok: boolean; error?: string; output?: string; structuredOutput?: unknown } | null;
 }
 
-/** Strip and normalize a reviewer structuredOutput (or fall back to limited). */
+/** Normalize a reviewer's Markdown-report outcome (v0.8: no structuredOutput). */
 export function coerceReviewerOutput(r: ReviewerWorkflowResult): {
 	status: "ok" | "limited" | "skipped" | "failed";
 	issues: Issue[];
@@ -41,48 +41,21 @@ export function coerceReviewerOutput(r: ReviewerWorkflowResult): {
 	coverage: { filesChecked: string[]; commandsRun: string[]; limitations: string[] };
 } {
 	if (!r.ok) {
-		// A salvaged structuredOutput (report-tool lifts the JSON out of a
-		// prose finish after "Missing structured_output call") keeps the
-		// reviewer's findings alive — reported as limited, not failed.
-		const so = r.structuredOutput;
-		if (!so || typeof so !== "object") {
-			return {
-				status: "failed",
-				issues: [],
-				summary: r.error ?? "reviewer failed",
-				coverage: { filesChecked: [], commandsRun: [], limitations: [r.error ?? "reviewer failed"] },
-			};
-		}
-	}
-	const so = r.structuredOutput;
-	if (!so || typeof so !== "object") {
 		return {
-			status: "limited",
+			status: "failed",
 			issues: [],
-			summary: "no structuredOutput",
-			coverage: { filesChecked: [], commandsRun: [], limitations: ["no structuredOutput"] },
+			summary: r.error ?? "reviewer failed",
+			coverage: { filesChecked: [], commandsRun: [], limitations: [r.error ?? "reviewer failed"] },
 		};
 	}
-	const obj = so as {
-		status?: string;
-		issues?: Issue[];
-		summary?: string;
-		coverage?: { filesChecked?: string[]; commandsRun?: string[]; limitations?: string[] };
-	};
-	const status = obj.status === "ok" || obj.status === "limited" || obj.status === "skipped"
-		? obj.status
-		: "limited";
+	const md = r.output ?? "";
+	// Reviewers signal a non-applicable lane with a SKIPPED summary line.
+	const skipped = /^\s*##\s*Summary\s*\n+\s*SKIPPED:/im.test(md) || /^\s*SKIPPED:/m.test(md);
 	return {
-		// Salvaged runs may claim ok, but the step did fail its finish
-		// contract — surface that honestly as limited.
-		status: r.ok ? status : status === "skipped" ? "skipped" : "limited",
-		issues: Array.isArray(obj.issues) ? obj.issues : [],
-		summary: typeof obj.summary === "string" ? obj.summary : "",
-		coverage: {
-			filesChecked: Array.isArray(obj.coverage?.filesChecked) ? obj.coverage!.filesChecked : [],
-			commandsRun: Array.isArray(obj.coverage?.commandsRun) ? obj.coverage!.commandsRun : [],
-			limitations: Array.isArray(obj.coverage?.limitations) ? obj.coverage!.limitations : [],
-		},
+		status: skipped ? "skipped" : "ok",
+		issues: [],
+		summary: md,
+		coverage: { filesChecked: [], commandsRun: [], limitations: [] },
 	};
 }
 
@@ -170,11 +143,10 @@ export function reportVerdict(
 	if (!gate || !gate.ok) return "no-gate";
 	const so = gate.structuredOutput as { status?: string } | null;
 	if (so?.status && so.status !== "ok") return "partial";
-	// Every reviewer ran but reported limited coverage — an APPROVE would be
-	// a confidence statement the run cannot back (mirror of the no-gate
-	// incident: degraded coverage must never read as a clean pass).
-	if (reviewers.length > 0 && reviewers.every((r) => r.ok && coerceReviewerOutput(r).status === "limited")) {
-		return "partial";
+	// Every reviewer skipped (lane inapplicable across the board) with a
+	// clean enforce — still not a full-coverage APPROVE.
+	if (reviewers.length > 0 && reviewers.every((r) => coerceReviewerOutput(r).status === "skipped")) {
+		return enforcedVerdict === "approve" ? "comment" : enforcedVerdict ?? "comment";
 	}
 	return enforcedVerdict ?? "comment";
 }
@@ -376,15 +348,14 @@ export function renderReviewerSection(r: ReviewerRunResult): string {
 	if (!r.ok) {
 		return [head, "", `- ${r.error ?? "unknown error"}`, ""].join("\n");
 	}
-	const issues = r.output?.issues ?? [];
-	const summary = r.output?.summary ?? "";
-	const body: string[] = [head, "", `- ${r.output?.status ?? "ok"} · ${issues.length} issue${issues.length === 1 ? "" : "s"}`];
-	if (summary) body.push(`- ${summary}`);
-	for (const issue of issues) {
-		const loc = issue.line !== undefined ? `${issue.file}:${issue.line}` : issue.file;
-		body.push(
-			`- [${issue.severity.toUpperCase()} · ${issue.category} · conf ${issue.confidence}] \`${loc}\` — ${issue.evidence}`,
-		);
+	// v0.8: reviewers return Markdown reports — render them verbatim under
+	// the status header (the gate already arbitrated them; see dispositions).
+	const md = r.output?.summary ?? "";
+	const body: string[] = [head, ""];
+	if (md.trim()) {
+		body.push(md.trim());
+	} else {
+		body.push("- (no output)");
 	}
 	body.push("");
 	return body.join("\n");

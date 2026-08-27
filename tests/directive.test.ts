@@ -190,18 +190,17 @@ describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", ()
 		const body = readFileSync(join(agentsDir, "gate.md"), "utf-8");
 		assert.match(body, /^acceptanceRole: read-only$/m);
 		assert.match(body, /Verification duty/);
-		assert.match(body, /never score a candidate above 8 without your own verification evidence/i);
+		assert.match(body, /never score a finding above 8 without your own verification evidence/i);
+		assert.match(body, /unverified:/);
 		assert.doesNotMatch(body, /You do \*\*not\*\* have the full diff/);
 	});
 
-	test("every agent pins the mandatory structured_output finish rule", () => {
-		// Field failure (2026-08-27): bugbot hit its soft tool budget, wrapped
-		// up with a prose line, and upstream failed the step with "Missing
-		// structured_output call" — findings lost. The weak "if available,
-		// call it instead" wording let models choose a plain-text finish.
+	test("v0.8: reviewers use Markdown output; gate/lite end with a fenced JSON block", () => {
+		// User decision (2026-08-27): drop the structured-output tool contract
+		// entirely — reviewers write Markdown reports, and only the gate /
+		// lite-reviewer finish with a fenced ```json block that the report
+		// tool machine-reads.
 		for (const name of [
-			"gate",
-			"lite-review",
 			"bugbot",
 			"security-review",
 			"conventions",
@@ -210,8 +209,13 @@ describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", ()
 			"history-context",
 		]) {
 			const body = readFileSync(join(agentsDir, `${name}.md`), "utf-8");
-			assert.match(body, /FINISH RULE \(mandatory\)/, `${name}.md must carry the mandatory finish rule`);
-			assert.match(body, /final action MUST be a single call to the `structured_output` tool/, `${name}.md finish rule wording`);
+			assert.match(body, /## Output format \(Markdown report\)/, `${name}.md must define the Markdown output format`);
+			assert.doesNotMatch(body, /structured_output tool/, `${name}.md must not reference the structured_output tool`);
+		}
+		for (const name of ["gate", "lite-review"]) {
+			const body = readFileSync(join(agentsDir, `${name}.md`), "utf-8");
+			assert.match(body, /```json/, `${name}.md must show the fenced JSON block template`);
+			assert.match(body, /fenced.*json block|EXACTLY one fenced JSON block/i, `${name}.md must instruct the fenced block`);
 		}
 	});
 });

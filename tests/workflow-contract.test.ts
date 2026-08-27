@@ -50,7 +50,7 @@ function scriptOf(d: string): string {
  */
 function assertScriptParses(script: string): void {
 	// Every path-bearing field must be a quoted string literal.
-	for (const field of ["cwd:", "toolBudget:", "turnBudget:", "outputSchema:"]) {
+	for (const field of ["cwd:", "toolBudget:", "turnBudget:"]) {
 		assert.match(script, new RegExp(`${field} `), `script should contain ${field}`);
 	}
 	// cwd values must be JSON strings (backtick-adjacent), never bare /path.
@@ -106,7 +106,7 @@ function runsAllOf(script: string): string {
 }
 
 function gateBlockOf(script: string): string {
-	return script.slice(script.indexOf("const reviewerInputs"));
+	return script.slice(script.indexOf("const reviewerSections"));
 }
 
 describe("buildReviewDirective — pi-subagents API contract", () => {
@@ -124,7 +124,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		// The reviewer array must be bound to a local before the return
 		// object — the gate IIFE and `reviewersShaped` reference it (a bare
 		// object property would throw `reviewers is not defined`).
-		assert.match(script, /^const REVIEWER_SCHEMA = \{[\s\S]*?\};\n\nconst reviewers = await runs\.all\(\[/);
+		assert.match(script, /\nconst reviewers = await runs\.all\(\[/);
 		assert.match(script, /return \{\n  reviewers,/);
 		const runsAll = (script.match(/runs\.all\(\[/g) ?? []).length;
 		assert.equal(runsAll, 1, "workflowScript must invoke runs.all once");
@@ -142,7 +142,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.match(d, /timeoutMs: \d+/);
 		// v0.7.2: the script is presented as an unescaped template literal
 		// (the double-escaped JSON string form broke the main agent's copy).
-		assert.match(d, /workflowScript: `\nconst REVIEWER_SCHEMA = \{/);
+		assert.match(d, /workflowScript: `\n\n?const reviewers = await runs\.all\(\[/);
 	});
 
 	test("P0: the generated workflowScript parses as valid JS (unquoted-path regression)", () => {
@@ -235,19 +235,14 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.equal(cwdOccurrences, reviewers.length + 1, "every reviewer + gate child must set cwd to the target workspace");
 	});
 
-	test("every reviewer and the gate declare an outputSchema", () => {
+	test("v0.8: NO child declares outputSchema (Markdown-first contract)", () => {
 		const d = buildReviewDirective(baseInput());
 		const script = scriptOf(d);
-		const allBlock = runsAllOf(script);
-		const gateBlock = gateBlockOf(script);
-		assert.match(allBlock, /outputSchema: REVIEWER_SCHEMA/);
-		assert.match(gateBlock, /outputSchema: GATE_SCHEMA/);
-		// Schemas are shared consts declared once — never inlined per child
-		// (inline form made 1400-char lines that broke the main agent's copy).
-		assert.equal((script.match(/outputSchema:/g) ?? []).length, defaultReviewers().length + 1);
-		const constDecls = (script.match(/const (REVIEWER|GATE)_SCHEMA/g) ?? []).length;
-		assert.equal(constDecls, 2, "each schema declared exactly once");
-		assert.doesNotMatch(allBlock, /JSON\.parse\(result\.output/);
+		// The structured-output tool contract was too fragile in the field
+		// ("Missing structured_output call" after budget wrap-ups). Reviewers
+		// return Markdown; the gate ends with a fenced JSON verdict block.
+		assert.doesNotMatch(script, /outputSchema/, "no child may declare outputSchema");
+		assert.doesNotMatch(script, /REVIEWER_SCHEMA|GATE_SCHEMA/, "schema consts must be gone");
 	});
 
 	test("RUNTIME: evaluating the script with stub runs returns the full object (no ReferenceError)", async () => {
@@ -257,25 +252,18 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		// and the subagent harness surfaced it as a null workflow return.
 		const d = buildReviewDirective(baseInput());
 		const script = scriptOf(d);
-		const stubOutput = (key: string, status: string) => ({
+		const stubOutput = (key: string) => ({
 			key,
 			ok: true,
 			error: undefined,
-			structuredOutput: {
-				status,
-				issues: [],
-				summary: `stub ${key}`,
-				coverage: { filesChecked: ["src/directive.ts"], commandsRun: [], limitations: [] },
-			},
-			output: "",
+			output: `## Summary\nstub ${key}\n\n## Findings\nNo findings.\n\n## Coverage\n- Files checked: …`,
 		});
 		const runs = {
-			all: async () => defaultReviewers().map((r) => stubOutput(r.id, r.id === "history-context" ? "skipped" : "ok")),
+			all: async () => defaultReviewers().map((r) => stubOutput(r.id)),
 			run: async (_key: string) => ({
 				ok: true,
 				error: undefined,
-				structuredOutput: { status: "ok", verdict: "approve", issues: [], dispositions: [], reason: "stub" },
-				output: "",
+				output: "## Synthesis\nstub gate\n\n```json\n{\"status\":\"ok\",\"verdict\":\"approve\",\"issues\":[],\"dispositions\":[]}\n```",
 			}),
 		};
 		const fn = new Function("runs", `return (async () => {\n${script}\n})();`); // eslint-disable-line no-new-func
@@ -284,19 +272,19 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.ok(Array.isArray(result.reviewers), "reviewers must be an array");
 		assert.equal(result.reviewers.length, defaultReviewers().length);
 		assert.ok(result.gate && typeof result.gate === "object", "gate must be an object");
-		assert.equal(result.gate.structuredOutput.verdict, "approve");
+		assert.match(result.gate.output, /```json/, "gate output carries the fenced verdict block");
 		assert.ok(Array.isArray(result.reviewersShaped), "reviewersShaped must be an array");
 		assert.equal(result.reviewersShaped.length, defaultReviewers().length);
 	});
 
-	test("gate inputs are reviewer structuredOutput objects (not Markdown blocks)", () => {
+	test("gate task inlines the reviewers' Markdown reports (v0.8 data flow)", () => {
 		const d = buildReviewDirective(baseInput());
 		const script = scriptOf(d);
 		const gateBlock = gateBlockOf(script);
-		assert.match(gateBlock, /reviewerInputs/);
-		assert.match(gateBlock, /structuredOutput/);
-		assert.match(gateBlock, /limitations/);
-		assert.doesNotMatch(gateBlock, /```json/);
+		assert.match(gateBlock, /reviewerSections/);
+		assert.match(gateBlock, /r\.output/);
+		assert.match(gateBlock, /# Reviewer reports \(Markdown\)/);
+		assert.doesNotMatch(gateBlock, /reviewerInputs/);
 	});
 
 	test("per-reviewer budgets are pinned and inherited", () => {
@@ -317,7 +305,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		);
 	});
 
-	test("gate child passes structured-output schema and strict model", () => {
+	test("gate child carries budgets, model, and the fenced-JSON finish instruction", () => {
 		const d = buildReviewDirective(baseInput({ gateThinking: "low" }));
 		const script = scriptOf(d);
 		const gateBlock = gateBlockOf(script);
@@ -331,6 +319,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 			new RegExp(`turnBudget: \\{ maxTurns: ${LEAN_BUDGETS.gateTurnBudget.maxTurns}, graceTurns: ${LEAN_BUDGETS.gateTurnBudget.graceTurns} \\}`),
 		);
 		assert.match(gateBlock, /dispositions/);
+		assert.match(gateBlock, /fenced json block/);
 	});
 
 	test("agent names use pi-review.* namespace and never builtin reviewer", () => {
