@@ -150,6 +150,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	const script = buildWorkflowScript({
 		reviewers,
 		gateModelWithThinking,
+		gateThinking,
 		gateModel,
 		budgets,
 		lite,
@@ -251,6 +252,8 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 export function buildWorkflowScript(input: {
 	reviewers: ReviewerSpec[];
 	gateModelWithThinking: string;
+	/** Raw gate thinking level (fallback branch passes it as a child param). */
+	gateThinking?: string;
 	gateModel: string;
 	budgets: LeanBudgetSpec;
 	lite: boolean;
@@ -271,6 +274,7 @@ export function buildWorkflowScript(input: {
 	const {
 		reviewers,
 		gateModelWithThinking,
+		gateThinking,
 		gateModel,
 		budgets,
 		lite,
@@ -432,6 +436,9 @@ export function buildWorkflowScript(input: {
 		lines.push(`    agent: ${JSON.stringify(LEAN_GATE_AGENT)},`);
 		lines.push("    task: gateTask,");
 		lines.push(`    cwd: ${JSON.stringify(workspacePath)},`);
+		if (gateThinking && gateThinking !== "off" && gateThinking !== "false") {
+			lines.push(`    thinking: ${JSON.stringify(gateThinking)},`);
+		}
 		lines.push(`    toolBudget: { soft: ${budgets.gateToolBudget.soft}, hard: ${budgets.gateToolBudget.hard} },`);
 		lines.push(`    turnBudget: { maxTurns: ${budgets.gateTurnBudget.maxTurns}, graceTurns: ${budgets.gateTurnBudget.graceTurns} },`);
 		lines.push("  });");

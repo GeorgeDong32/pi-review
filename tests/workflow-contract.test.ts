@@ -136,6 +136,12 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.equal((script.match(/runs\.run\('gate-fallback'/g) ?? []).length, 1, "one fallback launch");
 		assert.match(script, /try \{\n  gateRun = await runs\.run\('gate'/);
 		assert.match(script, /\} catch \(gateLaunchError\) \{\n  gateRun = await runs\.run\('gate-fallback'/);
+		// v0.8.2: the fallback keeps the configured thinking level via the
+		// child `thinking` param (child params consume it as an override).
+		const dThink = buildReviewDirective(baseInput({ gateThinking: "low" }));
+		assert.match(scriptOf(dThink), /gate-fallback[\s\S]{0,320}thinking: "low",/);
+		// Without a thinking config, no thinking line is emitted.
+		assert.doesNotMatch(script, /\n\s{4}thinking: /);
 		assert.doesNotMatch(script, /runs\.run\('claude-md-compliance'/);
 		assert.doesNotMatch(script, /runs\.run\('bugbot'/);
 		assert.doesNotMatch(script, /runs\.run\('security-review'/);

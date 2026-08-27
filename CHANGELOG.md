@@ -1,8 +1,27 @@
 # Changelog
 
+# Changelog
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
+
+## [0.8.2] - 2026-08-27
+
+### Fixed
+- **The gate-fallback branch now keeps the configured thinking level** via
+  the child `thinking` parameter (consumed as an override upstream). When a
+  proxy provider's model verification rejects the configured model and the
+  gate retries with an inherited model, `gate.thinking` (e.g. `"high"`) is
+  no longer silently dropped.
+- Ops note: the model-verification strictness itself is addressed by a
+  local patch to the installed pi-subagents (`~/.pi/agent/local-patches/`):
+  containment of the observed id within the registered id passes as a
+  warning-level match. That patch is lost on pi-subagents upgrades — re-apply
+  from the archived patch file; the in-script fallback here remains the
+  safety net either way.
+
+[0.8.2]: https://github.com/GeorgeDong32/pi-review/compare/v0.8.1...v0.8.2
 
 ## [0.8.1] - 2026-08-27
 
