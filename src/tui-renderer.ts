@@ -1,6 +1,9 @@
 /**
- * Optional TUI renderer — collapses long review reports into a verdict
- * preview line. Falls back to full markdown when expanded.
+ * TUI renderer for `pi-review` custom messages. v0.8.3 (user decision):
+ * the FULL report is always rendered — no collapsed/expanded split (the
+ * host's global expansion toggle made the card look like it "didn't show
+ * the report"). A `pi-review result:` summary line sits at the TOP of the
+ * card; the report body follows verbatim.
  */
 import { Box, Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -20,10 +23,15 @@ interface ReportHeader {
 }
 
 function extractHeader(markdown: string): ReportHeader {
-	const m = markdown.match(/Verdict:\s*([A-Z_]+)\*\*\s*\(([^)]*)\)/);
+	const m = markdown.match(/Verdict:\s*([A-Za-z_]+)\s*(?:（[^)]*）)?\s*\*{0,2}\s*\(([^)]*)\)/);
 	if (!m) return { verdict: "comment" };
-	const verdict = m[1]?.toLowerCase() as ReportHeader["verdict"];
-	const counts = (m[2] ?? "").match(/(\d+)\s*blocker\s*·\s*(\d+)\s*major\s*·\s*(\d+)\s*minor\s*·\s*(\d+)\s*nit/);
+	const raw = m[1]?.toLowerCase() as ReportHeader["verdict"];
+	const verdict = raw === "approve" || raw === "request_changes" || raw === "comment"
+		? raw
+		: raw === "no-gate" || raw === "error" || raw === "partial"
+			? raw
+			: "comment";
+	const counts = (m[2] ?? "").match(/(\d+)\s*blocker\s*[·•]\s*(\d+)\s*major\s*[·•]\s*(\d+)\s*minor\s*[·•]\s*(\d+)\s*nit/);
 	const totals: SeverityTotals | undefined = counts
 		? {
 				blocker: Number(counts[1] ?? 0),
@@ -35,8 +43,35 @@ function extractHeader(markdown: string): ReportHeader {
 	return { verdict, totals };
 }
 
+/** Title-case display form: approve -> Approve, request_changes -> Request changes. */
+function displayVerdict(v: ReportHeader["verdict"]): string {
+	switch (v) {
+		case "approve":
+			return "Approve";
+		case "request_changes":
+			return "Request changes";
+		case "comment":
+			return "Comment";
+		case "no-gate":
+			return "No gate";
+		case "error":
+			return "Error";
+		case "partial":
+			return "Partial";
+	}
+}
+
+/** `pi-review result: Approve · 0 blocker · 0 major · 0 minor · 0 nit` */
+export function summaryLine(header: ReportHeader): string {
+	const t = header.totals;
+	const counts = t
+		? ` · ${t.blocker} blocker · ${t.major} major · ${t.minor} minor · ${t.nit} nit`
+		: "";
+	return `pi-review result: ${displayVerdict(header.verdict)}${counts}`;
+}
+
 export function registerPiReviewRenderer(pi: ExtensionAPI): void {
-	pi.registerMessageRenderer("pi-review", (message, options, theme) => {
+	pi.registerMessageRenderer("pi-review", (message, _options, theme) => {
 		const contentText = typeof message.content === "string"
 			? message.content
 			: (() => {
@@ -47,10 +82,7 @@ export function registerPiReviewRenderer(pi: ExtensionAPI): void {
 					return parts.join("\n");
 				})();
 		// The `/review` command echo shares this customType with reports.
-		// Rendering it through the report path collapsed the user's own
-		// command into a meaningless "pi-review · COMMENT" line (the header
-		// extractor falls back to "comment" when no verdict is present).
-		// Echoes must pass through verbatim.
+		// Echoes render verbatim with their own prefix.
 		if (contentText.startsWith("/review")) {
 			const echo = theme.fg("toolTitle", "[pi-review] ") + contentText;
 			const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
@@ -58,17 +90,11 @@ export function registerPiReviewRenderer(pi: ExtensionAPI): void {
 			return box;
 		}
 		const header = extractHeader(contentText);
-		const label = header.verdict.toUpperCase();
-		const counts = header.totals
-			? ` · ${header.totals.blocker} blocker · ${header.totals.major} major · ${header.totals.minor} minor · ${header.totals.nit} nit`
-			: "";
-		const previewText = theme.bold(theme.fg("toolTitle", `pi-review · ${label}`)) + counts;
+		const summary = theme.bold(theme.fg("toolTitle", summaryLine(header)));
 		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		if (!options.expanded) {
-			box.addChild(new Text(previewText, 0, 0));
-			return box;
-		}
-		box.addChild(new Text(previewText, 0, 0));
+		box.addChild(new Text(summary, 0, 0));
+		box.addChild(new Text("", 0, 0));
+		// Full report body, always rendered (v0.8.3).
 		box.addChild(new Text(contentText, 0, 0));
 		return box;
 	});

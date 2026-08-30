@@ -60,11 +60,12 @@ export function registerReviewReportTool(pi: ExtensionAPI): void {
 				display: true,
 			});
 			void ctx;
+			const t = result.report.totals.bySeverity;
 			return {
 				content: [
 					{
 						type: "text",
-						text: `pi-review verdict: ${result.verdict} — ${result.report.totals.bySeverity.blocker} blocker · ${result.report.totals.bySeverity.major} major · ${result.report.totals.bySeverity.minor} minor · ${result.report.totals.bySeverity.nit} nit.`,
+						text: `pi-review result: ${result.verdict} · ${t.blocker} blocker · ${t.major} major · ${t.minor} minor · ${t.nit} nit — full report rendered in the pi-review card below.`,
 					},
 				],
 				details: { runId: result.runId, verdict: result.verdict, report: result.report },

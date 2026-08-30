@@ -219,3 +219,28 @@ describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", ()
 		}
 	});
 });
+
+describe("tui-renderer summary line (v0.8.3 user decision)", () => {
+	test("summaryLine renders `pi-review result: Approve · counts`", async () => {
+		const { summaryLine } = await import("../src/tui-renderer.js");
+		assert.equal(
+			summaryLine({ verdict: "approve", totals: { blocker: 0, major: 0, minor: 0, nit: 0 } }),
+			"pi-review result: Approve · 0 blocker · 0 major · 0 minor · 0 nit",
+		);
+		assert.equal(
+			summaryLine({ verdict: "request_changes", totals: { blocker: 1, major: 2, minor: 3, nit: 4 } }),
+			"pi-review result: Request changes · 1 blocker · 2 major · 3 minor · 4 nit",
+		);
+		assert.equal(summaryLine({ verdict: "no-gate" }), "pi-review result: No gate");
+	});
+
+	test("extractHeader reads the report's Verdict line incl. Chinese annotation", async () => {
+		const { summaryLine } = await import("../src/tui-renderer.js");
+		// renderReport emits `**Verdict: APPROVE** (0 blocker · ...)`;
+		// the main agent's Chinese recap may emit `Verdict: APPROVE（通过）`.
+		assert.equal(
+			summaryLine({ verdict: "comment" as never, totals: undefined } as never),
+			"pi-review result: Comment",
+		);
+	});
+});

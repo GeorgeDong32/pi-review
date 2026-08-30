@@ -70,6 +70,16 @@ export default function (pi: ExtensionAPI) {
 				const { config, legacyWarnings } = loadConfig();
 				for (const w of legacyWarnings) notify(`pi-review: ${w}`, "warning");
 
+				// Visible echo of the command — sent IMMEDIATELY, before the
+				// (potentially minutes-long) diff/clone preparation, so the
+				// user sees the command registered instead of a long silent
+				// gap.
+				pi.sendMessage({
+					customType: "pi-review",
+					content: parsed.input ? `/review ${parsed.input}` : "/review",
+					display: true,
+				});
+
 				// Dry-run: print the prepared run summary without injecting the directive.
 				if (parsed.noSpawn) {
 					const dryRunText = await renderDryRun(ctx, parsed, config);
@@ -83,12 +93,6 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 
-				// Visible echo of the command.
-				pi.sendMessage({
-					customType: "pi-review",
-					content: parsed.input ? `/review ${parsed.input}` : "/review",
-					display: true,
-				});
 				// Hidden directive → main agent executes as a turn.
 				pi.sendMessage(
 					{

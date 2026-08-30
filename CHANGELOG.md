@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.3] - 2026-08-27
+
+### Changed — report card UX (user decisions)
+- **The `[pi-review]` echo is sent immediately** when `/review` runs, before
+  the (potentially minutes-long) diff/clone preparation — no more long
+  silent gap after submitting the command.
+- **The report card always renders the FULL report.** The collapsed/expanded
+  split (one preview line unless the host's global expansion toggle was on)
+  made the card look like the report "didn't show up". The card now renders
+  a `pi-review result:` summary line at the TOP with the full report body
+  below it, regardless of the expansion state.
+- **Summary line format:** `pi-review result: Approve · 0 blocker · 0 major
+  · 0 minor · 0 nit` (title-case verdict; counts kept — user approved this
+  line, just wanted the new prefix).
+- The `pi_review_report` tool result line uses the same
+  `pi-review result: ...` format (was `pi-review verdict: ... —`), and now
+  points at the rendered card instead of duplicating it.
+
+[0.8.3]: https://github.com/GeorgeDong32/pi-review/compare/v0.8.2...v0.8.3
+
 ## [0.8.2] - 2026-08-27
 
 ### Fixed
