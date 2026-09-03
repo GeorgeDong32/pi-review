@@ -69,6 +69,41 @@ const okReviewer = (key: string, md = "## Summary\nok\n\n## Findings\nNo finding
 });
 
 describe("runReportTool", () => {
+	test("JSON-STRING workflowReturn is accepted (2026-09-03 field failure: full correct payload rejected as string)", () => {
+		const { cwd, runId } = setupManifest();
+		const payload = JSON.stringify({
+			reviewers: [okReviewer("bugbot", "## Summary\n1 finding\n\n## Findings\n- [MAJOR|bug|9] `a.ts:4` — ev")],
+			gate: {
+				ok: true,
+				output: gateMd({
+					status: "ok",
+					verdict: "request_changes",
+					reason: "major",
+					issues: [{ ...MAJOR_ISSUE, confidence: 9 }],
+					dispositions: [],
+				}),
+			},
+			reviewersShaped: [],
+		});
+		const res = runReportTool({
+			runId,
+			cwd,
+			threshold: 8,
+			workflowReturn: payload as unknown as object,
+		});
+		assert.equal(res.ok, true);
+		if (!res.ok) return;
+		assert.equal(res.verdict, "request_changes");
+	});
+
+	test("empty-string workflowReturn fails with an actionable message", () => {
+		const { cwd, runId } = setupManifest();
+		const res = runReportTool({ runId, cwd, workflowReturn: "" });
+		assert.equal(res.ok, false);
+		if (res.ok) return;
+		assert.match(res.error, /or a JSON string of it/);
+	});
+
 	test("finds the manifest via explicit cwd (not process.cwd)", () => {
 		const { cwd, runId } = setupManifest();
 		const res = runReportTool({

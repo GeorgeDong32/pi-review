@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.4] - 2026-09-03
+
+### Fixed
+- **`pi_review_report` accepts a JSON-string `workflowReturn`.** Field
+  session (2026-09-03): the model filled the tool argument with the FULL
+  correct payload — serialized as a JSON string — and the tool rejected it
+  with `workflowReturn must be an object`, then the misleading error sent
+  the model through 8 blind retries before it gave up and posted the
+  findings in chat. The tool now `JSON.parse`s string inputs and only
+  rejects values that are neither an object nor parseable JSON, with an
+  error that states what was received and the exact expected shape.
+
+[0.8.4]: https://github.com/GeorgeDong32/pi-review/compare/v0.8.3...v0.8.4
+
 ## [0.8.3] - 2026-08-27
 
 ### Changed — report card UX (user decisions)

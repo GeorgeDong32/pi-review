@@ -107,10 +107,27 @@ function emptyCoverage(): ReviewerOutput["coverage"] {
 
 /** Build a deterministic verdict + report from a workflow return value. */
 export function runReportTool(input: ReportToolInput): ReportToolResult {
-	if (!input.workflowReturn || typeof input.workflowReturn !== "object") {
-		return { ok: false, error: "workflowReturn must be an object" };
+	// Models frequently serialize the workflow return value into a JSON
+	// string when filling tool-call arguments (observed 2026-09-03: a call
+	// with the FULL correct payload as a string was rejected because we
+	// demanded an object, and the misleading error sent the model into 8
+	// blind retries). Accept both.
+	let workflowReturn = input.workflowReturn;
+	if (typeof workflowReturn === "string") {
+		try {
+			workflowReturn = JSON.parse(workflowReturn);
+		} catch {
+			// not JSON after all — fall through to the shape check below
+		}
 	}
-	const ret = input.workflowReturn as {
+	if (!workflowReturn || typeof workflowReturn !== "object") {
+		const got = workflowReturn === undefined ? "undefined" : workflowReturn === null ? "null" : typeof workflowReturn;
+		return {
+			ok: false,
+			error: `workflowReturn must be the object returned by the workflow (or a JSON string of it); got ${got}. Pass the workflow's return value verbatim: { reviewers: [...], gate: {...}, reviewersShaped: [...] }.`,
+		};
+	}
+	const ret = workflowReturn as {
 		reviewers?: unknown;
 		gate?: unknown;
 		reviewersShaped?: unknown;
