@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+
 import { buildReviewDirective } from "../src/directive.js";
 import {
 	LEAN_BUDGETS,
@@ -242,5 +244,73 @@ describe("tui-renderer summary line (v0.8.3 user decision)", () => {
 			summaryLine({ verdict: "comment" as never, totals: undefined } as never),
 			"pi-review result: Comment",
 		);
+	});
+});
+
+describe("tui-renderer flat report card (v0.8.5)", () => {
+	// Pass-through theme: assertions see the plain text, structure only.
+	const passthroughTheme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+	};
+
+	async function renderCard(contentText: string, width = 80): Promise<string[]> {
+		const { extractHeader, reportCard } = await import("../src/tui-renderer.js");
+		return reportCard(extractHeader(contentText), contentText, passthroughTheme).render(width);
+	}
+
+	test("extractHeader parses the canonical report Verdict line", async () => {
+		const { extractHeader } = await import("../src/tui-renderer.js");
+		// renderReport emits `**Verdict: APPROVE** (1 blocker · ...)`.
+		const header = extractHeader("## Review\n**Verdict: APPROVE** (1 blocker · 2 major · 0 minor · 1 nit)\n");
+		assert.equal(header.verdict, "approve");
+		assert.deepEqual(header.totals, { blocker: 1, major: 2, minor: 0, nit: 1 });
+		// Chinese annotation between verdict and counts still parses.
+		const zh = extractHeader("**Verdict: REQUEST_CHANGES（需修改）** (0 blocker · 0 major · 0 minor · 0 nit)");
+		assert.equal(zh.verdict, "request_changes");
+		assert.deepEqual(zh.totals, { blocker: 0, major: 0, minor: 0, nit: 0 });
+		// No Verdict line -> comment fallback.
+		assert.deepEqual(extractHeader("free-form markdown without a verdict"), { verdict: "comment" });
+	});
+
+	test("head row is the CC-style dot + bold summary line, flat (no box padding rows)", async () => {
+		const rows = await renderCard("**Verdict: APPROVE** (0 blocker · 0 major · 0 minor · 0 nit)\n\nbody");
+		assert.match(rows[0]!, /^⏺ pi-review result: Approve · 0 blocker · 0 major · 0 minor · 0 nit$/);
+	});
+
+	test("body starts under a `⎿  ` gutter, continuation rows space-aligned", async () => {
+		const rows = await renderCard("**Verdict: APPROVE** (0 blocker · 0 major · 0 minor · 0 nit)\nline one\nline two");
+		// rows[1] is the report's own Verdict line — the full body renders
+		// verbatim (v0.8.3), so the gutter opens with it, not "line one".
+		assert.match(rows[1]!, /^ {2}⎿ {2}\*\*Verdict: APPROVE\*\*/);
+		assert.match(rows[2]!, /^ {5}line one$/);
+		assert.match(rows[3]!, /^ {5}line two$/);
+		assert.equal(rows.length, 4);
+	});
+
+	test("long body lines wrap within the viewport, gutter-aligned", async () => {
+		const long = "x".repeat(200);
+		const rows = await renderCard("**Verdict: APPROVE** (0 blocker · 0 major · 0 minor · 0 nit)\n" + long, 80);
+		for (const row of rows) {
+			assert.ok(visibleWidth(row) <= 80, `row exceeds viewport: ${row}`);
+		}
+		// Body content survives wrapping intact (rows[1] is the Verdict line;
+		// gutter/continuation prefixes stripped from the wrapped long line).
+		const stripped = rows.slice(2).map((r) => r.replace(/^ {2}⎿ {2}/, "").replace(/^ {5}/, "")).join("");
+		assert.equal(stripped, long);
+	});
+
+	test("narrow viewport truncates the summary with an ellipsis", async () => {
+		const rows = await renderCard("**Verdict: REQUEST_CHANGES** (1 blocker · 2 major · 3 minor · 4 nit)\nbody", 30);
+		assert.ok(visibleWidth(rows[0]!) <= 30, `head row too wide: ${rows[0]}`);
+		// truncateToWidth appends an ANSI reset around the ellipsis even on
+		// plain text, so strip sequences before matching the tail.
+		assert.match(stripTerminalSequences(rows[0]!), /…$/);
+	});
+
+	test("empty report body renders only the summary row", async () => {
+		const rows = await renderCard("");
+		assert.equal(rows.length, 1);
+		assert.match(rows[0]!, /^⏺ pi-review result: Comment$/);
 	});
 });

@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.5] - 2026-09-04
+
+### Changed
+- **The report card renders flat in the Claude Code visual language.** The
+  card dropped its `customMessageBg` background Box: the `pi-review result:`
+  summary line now sits on an accent `⏺` dot row (bold title, truncated to
+  fit narrow viewports) and the full report body is wrapped under a dim
+  `⎿  ` gutter with space-aligned continuation rows, painted with the
+  `toolOutput` theme token. Only standard pi theme tokens are used, so the
+  flat card renders identically in the default TUI — no CC-TUI dependency.
+  The `/review` command echo keeps its background Box.
+
+[0.8.5]: https://github.com/GeorgeDong32/pi-review/compare/v0.8.4...HEAD
+
 ## [0.8.4] - 2026-09-03
 
 ### Fixed

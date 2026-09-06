@@ -4,8 +4,14 @@
  * host's global expansion toggle made the card look like it "didn't show
  * the report"). A `pi-review result:` summary line sits at the TOP of the
  * card; the report body follows verbatim.
+ *
+ * v0.8.5: the report card dropped its `customMessageBg` Box and renders
+ * flat in the Claude Code visual language — an accent `⏺` summary row and
+ * the body under a `⎿  ` gutter. Only standard pi theme tokens are used
+ * (no CC-TUI dependency), so the flat block renders identically in the
+ * default TUI.
  */
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import type { IssueSeverity, Verdict } from "./types.js";
@@ -22,7 +28,7 @@ interface ReportHeader {
 	totals?: SeverityTotals;
 }
 
-function extractHeader(markdown: string): ReportHeader {
+export function extractHeader(markdown: string): ReportHeader {
 	const m = markdown.match(/Verdict:\s*([A-Za-z_]+)\s*(?:（[^)]*）)?\s*\*{0,2}\s*\(([^)]*)\)/);
 	if (!m) return { verdict: "comment" };
 	const raw = m[1]?.toLowerCase() as ReportHeader["verdict"];
@@ -70,6 +76,49 @@ export function summaryLine(header: ReportHeader): string {
 	return `pi-review result: ${displayVerdict(header.verdict)}${counts}`;
 }
 
+/** Minimal theme surface of the flat card (same pattern as CC-TUI's CCTheme). */
+export interface CardTheme {
+	fg(color: string, text: string): string;
+	bold(text: string): string;
+}
+
+/** Gutter `  ⎿  ` is 5 visible cells; continuation rows align with spaces. */
+const GUTTER_VISIBLE_WIDTH = 5;
+const CONTINUATION = " ".repeat(GUTTER_VISIBLE_WIDTH);
+
+/**
+ * Flat report card in the CC visual language: `⏺ <summary>` head row, body
+ * wrapped under a `  ⎿  ` gutter (dim), continuation rows space-aligned.
+ * Plain object implementing the pi-tui Component interface.
+ */
+export function reportCard(header: ReportHeader, contentText: string, theme: CardTheme) {
+	return {
+		invalidate() {},
+		render(width: number): string[] {
+			// Truncate the PLAIN summary before styling so ANSI escapes are never cut.
+			const dotCell = visibleWidth("⏺ ");
+			const avail = Math.max(10, width - dotCell);
+			const head = `${theme.fg("accent", "⏺")} ${theme.bold(theme.fg("toolTitle", truncateToWidth(summaryLine(header), avail, "…")))}`;
+			const body = contentText.replace(/\n+$/, "");
+			if (!body.trim()) return [head];
+			const gutter = theme.fg("dim", `  ⎿  `);
+			const wrapW = Math.max(10, width - GUTTER_VISIBLE_WIDTH);
+			const physical: string[] = [];
+			for (const line of body.split("\n")) physical.push(...wrapTextWithAnsi(line, wrapW));
+			// Body painted `toolOutput` — the theme token for tool output keeps the
+			// report visually subordinate to the summary without a background box
+			// and adapts to every theme; the raw default fg would blur into
+			// assistant prose. Blank separators stay truly blank.
+			return [
+				head,
+				...physical.map((l, i) =>
+					`${i === 0 ? gutter : CONTINUATION}${l ? theme.fg("toolOutput", l) : l}`
+				),
+			];
+		},
+	};
+}
+
 export function registerPiReviewRenderer(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer("pi-review", (message, _options, theme) => {
 		const contentText = typeof message.content === "string"
@@ -89,13 +138,6 @@ export function registerPiReviewRenderer(pi: ExtensionAPI): void {
 			box.addChild(new Text(echo, 0, 0));
 			return box;
 		}
-		const header = extractHeader(contentText);
-		const summary = theme.bold(theme.fg("toolTitle", summaryLine(header)));
-		const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-		box.addChild(new Text(summary, 0, 0));
-		box.addChild(new Text("", 0, 0));
-		// Full report body, always rendered (v0.8.3).
-		box.addChild(new Text(contentText, 0, 0));
-		return box;
+		return reportCard(extractHeader(contentText), contentText, theme);
 	});
 }
