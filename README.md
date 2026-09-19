@@ -67,7 +67,7 @@ Runtime names are `pi-review.<id>` (package agents registered via `pi.subagents.
 
 | ID | Purpose | Default | Tools |
 |---|---|---|---|
-| `claude-md-compliance` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, ls |
+| `rulesheriff` | Project rules (AGENTS.md / CLAUDE.md / .pi/) | enabled | read, grep, ls |
 | `bugbot` | Obvious bugs in introduced lines only | enabled | read, grep, bash |
 | `history-context` | Light git blame / log (≤5 files, `log -n 5`) | enabled | read, bash |
 | `security-review` | Security issues introduced by the change | enabled | read, grep, bash |
@@ -128,7 +128,7 @@ Run `/review-config` to open it in `$EDITOR`. The file is loaded, merged with th
     "turnBudget": { "maxTurns": 20, "graceTurns": 2 }
   },
   "reviewers": {
-    "claude-md-compliance": {
+    "rulesheriff": {
       "model": "anthropic/claude-opus-4-6",
       "thinking": "high",
       "enabled": true
@@ -155,7 +155,7 @@ The `pi_review_report` tool renders deterministic markdown into chat and persist
 **Verdict: REQUEST_CHANGES** (1 blockers · 1 major · 0 minor · 0 nit)
 Reviewed in 42.1s · 4 reviewers · 1 gate
 
-### claude-md-compliance (anthropic/claude-opus-4-6) — ok · 12.0s
+### rulesheriff (anthropic/claude-opus-4-6) — ok · 12.0s
 - 1 issue
 - [BLOCKER · compliance · conf 9] `src/auth.ts:42` — rule "no raw token logging" violated
 

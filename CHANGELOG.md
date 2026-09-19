@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.6] - 2026-09-19
+
+### Changed
+- **`claude-md-compliance` is renamed to `rulesheriff`** (user request: the old
+  id was a mouthful next to `bugbot`). The agent file is now
+  `agents/rulesheriff.md` and the runtime agent name is `pi-review.rulesheriff`.
+  Config keys under `reviewers` must use the new id — an old
+  `claude-md-compliance` key would survive merging as a phantom reviewer
+  whose agent file no longer exists. Existing user configs need the key and
+  its inner `id` updated; other fields (`thinking`, `model`, `enabled`)
+  carry over unchanged.
+- **The report is delivered as plain chat text, not a tool-result card.**
+  The `pi_review_report` tool no longer pushes a rendered `pi-review` card
+  into the conversation (user decision: the card read as a collapsed tool
+  output and hid the report). The tool keeps all of its side effects —
+  deterministic verdict enforcement, session-entry persistence, workspace
+  reclamation — but its result text now carries the FULL markdown plus an
+  explicit instruction to output it verbatim as the main agent's final chat
+  message. The directive's Step 3 and the checklist mirror the same
+  contract. The `/review-show` command and replay of older sessions keep
+  rendering the card.
+
+### Fixed
+- **Compliance findings for style/format rules no longer force a change
+  request.** Field pattern (2026-09-19): project rule files stating
+  prose-comment length limits (e.g. "≤3 lines") were enforced verbatim —
+  the compliance reviewer scored them `major`, the gate's re-scoring guide
+  granted 8 to any "explicit rule violation", and strict verdict policy
+  turned that into `request_changes` over prose. Severity now follows the
+  rule's *nature*, not its wording, in all three agents: style/format
+  violations (comment length, naming, formatting, doc wording) cap at
+  `minor` even when the rule file says MUST/NEVER, and the gate must
+  re-severity such findings down in its issues array (its verdict is
+  computed from severity in code, so an un-demoted style finding would
+  still force a change request). Lite mode gets the same cap. Behavioral,
+  correctness, and security rule violations are unaffected.
+
+[0.8.6]: https://github.com/GeorgeDong32/pi-review/compare/v0.8.5...HEAD
+
 ## [0.8.5] - 2026-09-04
 
 ### Changed

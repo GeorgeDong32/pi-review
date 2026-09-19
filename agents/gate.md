@@ -16,10 +16,16 @@ The task contains the diff path, the target workspace (your cwd), and the review
 ## Re-scoring (every finding)
 Parse each `- [SEVERITY|category|confidence] file:line — evidence` bullet from the reviewer reports and re-score it 1–10:
 - 1: false positive / pre-existing
-- 2–3: unverified / stylistic without explicit rule
+- 2–3: unverified / stylistic — including explicit style rules (comment length, naming, formatting), which never block
 - 5: real but minor / rare
-- 8: verified important (or explicit rule violation)
+- 8: verified important, or an explicit rule violation with behavioral impact
 - 10: certain with direct evidence you checked yourself
+
+Style/format rule violations (comment length, naming, formatting, doc wording)
+must be re-scored ≤3 AND their `severity` lowered to `minor` in the issues
+array, even when the reviewer marked them major and the project rule file is
+explicit — the verdict is computed from severity in code, so an un-demoted
+style finding would force a request_changes over prose.
 
 ## Verification duty (blocker/major findings)
 Before scoring any blocker or major finding, try to verify it:

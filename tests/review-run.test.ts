@@ -279,13 +279,13 @@ describe("prepareRun — lite + adaptive routing", () => {
 		});
 		assert.ok(skips.some(([id]) => id === "bugbot"));
 		assert.ok(skips.some(([id]) => id === "security-review"));
-		assert.ok(skips.some(([id]) => id === "claude-md-compliance"));
+		assert.ok(skips.some(([id]) => id === "rulesheriff"));
 		assert.ok(skips.some(([id]) => id === "history-context"));
 
 		const roster = reviewersForRouting(target, config, { docsOnly: true, rulePaths: [], historyAvailable: false });
 		assert.equal(roster.some((r) => r.id === "bugbot"), false);
 		assert.equal(roster.some((r) => r.id === "security-review"), false);
-		assert.equal(roster.some((r) => r.id === "claude-md-compliance"), false);
+		assert.equal(roster.some((r) => r.id === "rulesheriff"), false);
 		assert.equal(roster.some((r) => r.id === "history-context"), false);
 		// Code-comments is also skipped for docs-only.
 		assert.equal(roster.some((r) => r.id === "code-comments"), false);

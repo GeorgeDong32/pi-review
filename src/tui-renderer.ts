@@ -10,6 +10,11 @@
  * the body under a `⎿  ` gutter. Only standard pi theme tokens are used
  * (no CC-TUI dependency), so the flat block renders identically in the
  * default TUI.
+ *
+ * v0.8.6 (user decision): live reports no longer arrive through this
+ * renderer — the report tool returns the markdown to the main agent, which
+ * outputs it as plain chat text. This card now serves only the `/review`
+ * command echo, `/review-show` re-renders, and replay of older sessions.
  */
 import { Box, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

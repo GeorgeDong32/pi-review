@@ -76,7 +76,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 		blocks.push("");
 	}
 	blocks.push(
-		`Review the change (${target.label}). The plugin has already prepared the target workspace, diff and run manifest. Run one workflowScript that fans out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite)" : ""}${gateOn ? " + inline gate" : ""}, then call the \`pi_review_report\` tool to finalize the report. Do not re-write or summarize findings in chat.`,
+		`Review the change (${target.label}). The plugin has already prepared the target workspace, diff and run manifest. Run one workflowScript that fans out ${reviewers.length} reviewer${reviewers.length === 1 ? "" : "s"}${lite ? " (lite)" : ""}${gateOn ? " + inline gate" : ""}, then call the \`pi_review_report\` tool to finalize the report and output its markdown verbatim in chat.`,
 	);
 	blocks.push("");
 	blocks.push("## Hard rules (do not violate)");
@@ -123,7 +123,7 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 			: gateOn
 				? `Run one workflowScript: ${reviewers.length} parallel reviewers + inline gate (one subagent call)`
 				: `Run one workflowScript: ${reviewers.length} parallel reviewers, no gate (one subagent call)`,
-		"Call `pi_review_report` once with the workflow return value (never re-parse findings)",
+		"Call `pi_review_report` once with the workflow return value (never re-parse findings), then output its markdown verbatim in chat",
 	];
 	for (const s of todoSteps) blocks.push(`- [ ] ${s}`);
 	blocks.push("");
@@ -221,11 +221,15 @@ export function buildReviewDirective(input: ReviewDirectiveInput): string {
 	);
 	blocks.push("");
 
-	// Step 3 — tool call.
-	blocks.push("## Step 3 — Render the report (call `pi_review_report`)");
+	// Step 3 — tool call + verbatim chat echo.
+	blocks.push("## Step 3 — Render the report (call `pi_review_report`, then echo it verbatim)");
 	blocks.push("");
 	blocks.push(
-		"Call the `pi_review_report` tool **exactly once** with `{ runId, workflowReturn }`. The tool loads the manifest, extracts + validates the gate's fenced JSON verdict block, runs the deterministic verdict rules, and renders the final markdown + persists a session entry. Do not re-write findings yourself.",
+		"Call the `pi_review_report` tool **exactly once** with `{ runId, workflowReturn }`. The tool loads the manifest, extracts + validates the gate's fenced JSON verdict block, runs the deterministic verdict rules, persists a session entry, and returns the final markdown.",
+	);
+	blocks.push("");
+	blocks.push(
+		"Then **output that markdown verbatim as your final chat message** — every line unchanged, no summarizing, no reformatting, no commentary before or after. The chat message IS the user's report; do not rely on the tool result alone, and do not re-write findings yourself.",
 	);
 	blocks.push("");
 
@@ -323,7 +327,7 @@ export function buildWorkflowScript(input: {
 			"Do not read plan.md, progress.md, anything under .pi-subagents/ (artifacts and transcripts included), or node_modules.",
 			"Prefer Read/Grep. If you use bash, only simple allowlisted commands (no &&/||/; compounds).",
 		];
-		if (r.id === "claude-md-compliance") {
+		if (r.id === "rulesheriff") {
 			taskParts.push(
 				`If change-profile.rulePaths is empty, return status: skipped with empty issues — do not invent rule violations.`,
 			);

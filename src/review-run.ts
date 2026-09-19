@@ -424,7 +424,7 @@ export interface ChangeProfile {
 /**
  * Select enabled reviewers, then — in `adaptive` mode — drop lanes that
  * cannot add signal for THIS change:
- *  - no rule files          → skip claude-md-compliance
+ *  - no rule files          → skip rulesheriff
  *  - docs-only diff         → skip bugbot / security-review (no code to scan)
  *  - no git history         → skip history-context
  *  - docs-only              → skip code-comments (nothing but prose touched)
@@ -452,7 +452,7 @@ export function reviewersForRouting(
 export function adaptiveSkips(profile: ChangeProfile): Array<[string, string]> {
 	const out: Array<[string, string]> = [];
 	if (profile.rulePaths.length === 0) {
-		out.push(["claude-md-compliance", "no rule files (AGENTS.md / CLAUDE.md / .pi rules)"]);
+		out.push(["rulesheriff", "no rule files (AGENTS.md / CLAUDE.md / .pi rules)"]);
 	}
 	if (profile.docsOnly) {
 		out.push(["bugbot", "docs-only change (no code to scan)"]);

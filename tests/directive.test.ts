@@ -31,7 +31,7 @@ const DIFF = "/tmp/pi-review-test-cwd/.pi/pi-review/runs/r1/change.diff";
 const DIMENSIONS = [
 	"bugbot",
 	"security-review",
-	"claude-md-compliance",
+	"rulesheriff",
 	"code-comments",
 	"history-context",
 ];
@@ -128,7 +128,9 @@ describe("buildReviewDirective — user-facing copy", () => {
 	test("hard rules preserve single-wave and no-retry guidance", () => {
 		const d = buildReviewDirective(baseInput());
 		assert.match(d, /Do not retry/);
-		assert.match(d, /Do not re-write or summarize findings in chat/);
+		// v0.8.6: the report is echoed verbatim into chat; hand-rewriting stays banned.
+		assert.match(d, /output its markdown verbatim in chat/);
+		assert.match(d, /do not re-write findings yourself/);
 		assert.match(d, new RegExp(leanAgentName("bugbot")));
 	});
 
@@ -179,7 +181,7 @@ describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", ()
 		"security-review",
 		"conventions",
 		"code-comments",
-		"claude-md-compliance",
+		"rulesheriff",
 		"history-context",
 	]) {
 		test(`${name}.md ends with acceptance-report compliance`, () => {
@@ -207,7 +209,7 @@ describe("bundled agent prompts — pi-subagents ≥0.5 acceptance contract", ()
 			"security-review",
 			"conventions",
 			"code-comments",
-			"claude-md-compliance",
+			"rulesheriff",
 			"history-context",
 		]) {
 			const body = readFileSync(join(agentsDir, `${name}.md`), "utf-8");

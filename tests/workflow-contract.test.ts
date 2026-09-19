@@ -76,7 +76,7 @@ function fakeReviewer(id: string, overrides: Partial<ReviewerSpec> = {}): Review
 
 function defaultReviewers(): ReviewerSpec[] {
 	return [
-		fakeReviewer("claude-md-compliance"),
+		fakeReviewer("rulesheriff"),
 		fakeReviewer("bugbot"),
 		fakeReviewer("security-review"),
 		fakeReviewer("code-comments"),
@@ -142,7 +142,7 @@ describe("buildReviewDirective — pi-subagents API contract", () => {
 		assert.match(scriptOf(dThink), /gate-fallback[\s\S]{0,320}thinking: "low",/);
 		// Without a thinking config, no thinking line is emitted.
 		assert.doesNotMatch(script, /\n\s{4}thinking: /);
-		assert.doesNotMatch(script, /runs\.run\('claude-md-compliance'/);
+		assert.doesNotMatch(script, /runs\.run\('rulesheriff'/);
 		assert.doesNotMatch(script, /runs\.run\('bugbot'/);
 		assert.doesNotMatch(script, /runs\.run\('security-review'/);
 	});

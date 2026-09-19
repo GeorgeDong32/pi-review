@@ -91,7 +91,7 @@ describe("mergeWithDefaults", () => {
 		assert.equal(bug.thinking, "xhigh");
 		assert.equal(bug.enabled, false);
 		// Other reviewers untouched.
-		assert.equal(merged.reviewers["claude-md-compliance"].model, "inherit");
+		assert.equal(merged.reviewers["rulesheriff"].model, "inherit");
 	});
 
 	test("adds a brand-new reviewer", () => {
@@ -107,9 +107,9 @@ describe("mergeWithDefaults", () => {
 
 	test("ignores invalid sub-objects under reviewers", () => {
 		const merged = mergeWithDefaults({
-			reviewers: { "claude-md-compliance": null, bugbot: "bad" },
+			reviewers: { "rulesheriff": null, bugbot: "bad" },
 		});
-		assert.equal(merged.reviewers["claude-md-compliance"].model, "inherit");
+		assert.equal(merged.reviewers["rulesheriff"].model, "inherit");
 		assert.equal(merged.reviewers.bugbot.model, "inherit");
 	});
 

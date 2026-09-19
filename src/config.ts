@@ -40,9 +40,15 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 		mode: "adaptive",
 	},
 	reviewers: {
-		"claude-md-compliance": {
-			id: "claude-md-compliance",
-			label: "Claude-MD Compliance",
+		bugbot: {
+			id: "bugbot",
+			label: "Bugbot",
+			enabled: true,
+			model: "inherit",
+		},
+		rulesheriff: {
+			id: "rulesheriff",
+			label: "RuleSheriff",
 			enabled: true,
 			model: "inherit",
 		},
