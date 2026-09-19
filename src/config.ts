@@ -52,12 +52,6 @@ export const DEFAULT_CONFIG: PiReviewConfig = {
 			enabled: true,
 			model: "inherit",
 		},
-		bugbot: {
-			id: "bugbot",
-			label: "Bugbot",
-			enabled: true,
-			model: "inherit",
-		},
 		"history-context": {
 			id: "history-context",
 			label: "History Context",
