@@ -4,16 +4,6 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.8.7] - 2026-09-24
-
-### Changed
-- **The `/review` command echo renders as a CC-style user command bar.**
-  The echo previously carried a `[pi-review]` prefix on a `customMessageBg`
-  box — the last remaining stock-style card in the extension. It now renders
-  like Claude Code's slash-command echo (dim `❯` + white command text on the
-  CC `userMessageBackground`, spanning the row), byte-compatible with
-  CC-TUI's typed-message bars. Report cards are unchanged.
-
 ## [0.8.6] - 2026-09-19
 
 ### Changed
